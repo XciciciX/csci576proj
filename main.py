@@ -8,15 +8,15 @@ import os
 
 # ---- 配置参数 ----
 EDGE_STRIP_WIDTH = 10        # 用于提取边缘条带的宽度 (像素)
-COLOR_BINS = 10              # HSV 每个通道的 bin 数
-GRAD_BINS = 10               # 梯度方向直方图 bin 数
+COLOR_BINS = 8              # HSV 每个通道的 bin 数
+GRAD_BINS = 8               # 梯度方向直方图 bin 数
 ALPHA = 0.5                 # 颜色差权重
 BETAB = 0.5                 # 梯度差权重
 MIN_COMPONENT_AREA = 10    # 过滤太小的噪声连通域
 # MAX_SEARCH_SOLUTIONS = 100000    # 只找一个最优解，够用了
 
-# 一个简单的结构体保存 piece 的旋转版本信息
-PieceRot = namedtuple("PieceRot", ["piece_idx", "rot_idx", "img", "edges"])
+# Store info of a piece in a specific rotation
+PieceRot = namedtuple("PieceRot", ["piece_idx", "img", "edges"])
 
 
 # ---------- 工具函数 ----------
@@ -30,25 +30,29 @@ def load_image(path):
 
 def segment_pieces(image):
     """
-    从黑底大图中分割出每个 puzzle piece。
-    假设背景接近纯黑，拼图是彩色块。
-    返回：列表 [piece_img, ...]
+    Segment individual puzzle pieces from a large image with a black background.
+    Assumes the background is close to pure black, and puzzle pieces are colored.
+    Returns: a list [piece_img, ...]
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    # 简单阈值分离前景（拼图块）和背景
+
+    # Simple threshold to separate foreground (puzzle pieces) from background
     _, thresh = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
 
-    # 去噪一下
+    # Remove small noise
     kernel = np.ones((3, 3), np.uint8)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
 
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(thresh, connectivity=8)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        thresh, connectivity=8
+    )
 
     pieces = []
-    for label in range(1, num_labels):  # 0 是背景
+    for label in range(1, num_labels):  # 0 is the background
         x, y, w, h, area = stats[label]
         if area < MIN_COMPONENT_AREA:
             continue
+
         piece = image[y:y + h, x:x + w].copy()
         pieces.append(piece)
 
@@ -56,6 +60,7 @@ def segment_pieces(image):
     return pieces
 
 
+#TODO: change and consider irregular shapes
 def normalize_pieces(pieces):
     """
     把所有 piece 调整到相同大小（简单 resize）。
@@ -76,12 +81,12 @@ def normalize_pieces(pieces):
     return norm_pieces, (target_h, target_w)
 
 
-def rotate_piece(img, rot_idx):
-    """
-    rot_idx = 0,1,2,3 分别对应 0°,90°,180°,270°
-    """
-    k = rot_idx % 4
-    return np.rot90(img, k, axes=(1, 0))  # 逆时针 90*k（注意 axes）
+# def rotate_piece(img, rot_idx):
+#     """
+#     rot_idx = 0,1,2,3 分别对应 0°,90°,180°,270°
+#     """
+#     k = rot_idx % 4
+#     return np.rot90(img, k, axes=(1, 0))  # 逆时针 90*k（注意 axes）
 
 
 def compute_color_hist(strip, bins=COLOR_BINS):
@@ -157,25 +162,14 @@ def compute_piece_edge_descriptors(piece_img, edge_strip_width=EDGE_STRIP_WIDTH)
     edges = {}
 
     # top
-    edges["top"] = {
-        "color": compute_color_hist(top_strip),
-        "grad": compute_grad_hist(gray[0:k, :], top_mag, top_ang)
-    }
-    # bottom
-    edges["bottom"] = {
-        "color": compute_color_hist(bottom_strip),
-        "grad": compute_grad_hist(gray[h - k:h, :], bottom_mag, bottom_ang)
-    }
-    # left
-    edges["left"] = {
-        "color": compute_color_hist(left_strip),
-        "grad": compute_grad_hist(gray[:, 0:k], left_mag, left_ang)
-    }
+    edges[0] = [compute_color_hist(top_strip), compute_grad_hist(gray[0:k, :], top_mag, top_ang)]
     # right
-    edges["right"] = {
-        "color": compute_color_hist(right_strip),
-        "grad": compute_grad_hist(gray[:, w - k:w], right_mag, right_ang)
-    }
+    edges[1] = [compute_color_hist(right_strip), compute_grad_hist(gray[:, w - k:w], right_mag, right_ang)] 
+    # bottom
+    edges[2] = [compute_color_hist(bottom_strip), compute_grad_hist(gray[h - k:h, :], bottom_mag, bottom_ang)]
+    # left
+    edges[3] = [compute_color_hist(left_strip), compute_grad_hist(gray[:, 0:k], left_mag, left_ang)]    
+
 
     return edges
 
@@ -192,8 +186,8 @@ def grad_distance(g1, g2):
 
 
 def edge_distance(descA, descB, alpha=ALPHA, beta=BETAB):
-    color_diff = color_distance(descA["color"], descB["color"])
-    grad_diff  = grad_distance(descA["grad"],  descB["grad"])
+    color_diff = color_distance(descA[0], descB[0])
+    grad_diff  = grad_distance(descA[1],  descB[1])
     return alpha * color_diff + beta * grad_diff
 
 
@@ -206,14 +200,15 @@ def build_all_rotations(norm_pieces):
     返回：
         all_rots: (piece_idx, rot_idx) -> PieceRot
     """
-    all_rots = {}
+    all_rots = []
     for i, p in enumerate(norm_pieces):
-        for rot in range(4):
-            img_rot = rotate_piece(p, rot)
-            edges = compute_piece_edge_descriptors(img_rot)
-            all_rots[(i, rot)] = PieceRot(piece_idx=i, rot_idx=rot, img=img_rot, edges=edges)
+        # for rot in range(4):
+        #     img_rot = rotate_piece(p, rot)
+        edges = compute_piece_edge_descriptors(p)
+        all_rots.append(PieceRot(piece_idx=i, img=p, edges=edges))
     print(f"[INFO] Built {len(all_rots)} rotated versions.")
     return all_rots
+
 
 
 # ---------- 布局搜索（DFS + 剪枝） ----------
@@ -221,7 +216,7 @@ def build_all_rotations(norm_pieces):
 class PuzzleSolver:
     def __init__(self, all_rots, grid_rows, grid_cols):
         self.all_rots = all_rots               # dict[(piece_idx, rot_idx)] -> PieceRot
-        self.num_pieces = len(set(i for (i, _) in all_rots.keys()))
+        self.num_pieces = len(all_rots)
         self.grid_rows = grid_rows
         self.grid_cols = grid_cols
 
@@ -237,9 +232,34 @@ class PuzzleSolver:
 
         self.solutions_found = 0
 
+        self.sim = []
+
+
     def solve(self):
+        # Get similarity scores between all edges first
+        self._get_score()
         self._dfs(0)
         return self.best_layout, self.best_cost
+
+    def _get_score(self):
+        sim = np.full((self.num_pieces, self.num_pieces, 4), np.inf, dtype=np.float32)
+
+
+        for i in range(self.num_pieces):
+            pi = self.all_rots[i]
+            for j in range(self.num_pieces):
+                if i == j:
+                    continue
+                pj = self.all_rots[j]
+                for rot in range(4):
+                    
+                    sim[i][j][rot] = edge_distance(
+                        pi.edges[rot], pj.edges[(rot + 2) % 4]
+                    )
+
+        self.sim = sim
+
+        
 
     def _dfs(self, pos_idx):
         """
@@ -264,33 +284,37 @@ class PuzzleSolver:
 
             # 如果当前是“只平移不旋转”的例子，可以把 range(4) 改成 [0]
             for rot in [0]:
-                key = (piece_idx, rot)
-                if key not in self.all_rots:
-                    continue
+                # key = (piece_idx, rot)
+                # if key not in self.all_rots:
+                #     continue
 
-                piece_rot = self.all_rots[key]
+                piece_rot = self.all_rots[piece_idx]
 
                 # 只考虑与已放好的“上”和“左”的匹配代价
                 add_cost = 0.0
 
+# TODO: calculate all edges first before matching
+# Translate: If we have n pieces, calculate all scores, finish the puzzle from a random start.
+# todo: only a diagonal sim is enough
                 # 上方
                 if r > 0 and self.current_layout[r - 1][c] is not None:
                     up_piece_idx, up_rot = self.current_layout[r - 1][c]
-                    up_rot_obj = self.all_rots[(up_piece_idx, up_rot)]
-                    add_cost += edge_distance(
-                        up_rot_obj.edges["bottom"],
-                        piece_rot.edges["top"]
-                    )
+                    add_cost += self.sim[piece_idx][up_piece_idx][0]
+                    # up_rot_obj = self.all_rots[up_piece_idx][]
+                    # add_cost += edge_distance(
+                    #     up_rot_obj.edges["bottom"],
+                    #     piece_rot.edges["top"]
+                    # )
 
                 # 左方
                 if c > 0 and self.current_layout[r][c - 1] is not None:
                     left_piece_idx, left_rot = self.current_layout[r][c - 1]
-                    left_rot_obj = self.all_rots[(left_piece_idx, left_rot)]
-                    add_cost += edge_distance(
-                        left_rot_obj.edges["right"],
-                        piece_rot.edges["left"]
-                    )
-
+                    add_cost += self.sim[piece_idx][left_piece_idx][3]
+                    # left_rot_obj = self.all_rots[(left_piece_idx, left_rot)]
+                    # add_cost += edge_distance(
+                    #     left_rot_obj.edges["right"],
+                    #     piece_rot.edges["left"]
+                    # )
                 new_cost = self.current_cost + add_cost
 
                 # branch-and-bound 剪枝：当前 partial cost 已经 >= best，就没必要继续
@@ -333,7 +357,7 @@ def render_layout(best_layout, all_rots, piece_size):
     for r in range(rows):
         for c in range(cols):
             piece_idx, rot_idx = best_layout[r][c]
-            piece_rot = all_rots[(piece_idx, rot_idx)]
+            piece_rot = all_rots[piece_idx]
             img = piece_rot.img
             # 确保大小相同
             img = cv2.resize(img, (pw, ph), interpolation=cv2.INTER_AREA)
@@ -385,11 +409,16 @@ def main(input_path, output_image_path, output_anim_dir=None):
     norm_pieces, piece_size = normalize_pieces(pieces)
 
     # 默认假设是正方形布局：rows = cols = sqrt(N)
+
+    # TODO: change this
+    # 
+    # 找出所有 (r, c)，使得 r * c == num_pieces
+
+    # 对每个 (r, c) 都跑一次 PuzzleSolver 选 cost 最小的那个
+
     num_pieces = len(norm_pieces)
     side = int(round(math.sqrt(num_pieces)))
-    if side * side != num_pieces:
-        print(f"[WARN] Number of pieces is {num_pieces}, not a perfect square. "
-              "You may need to specify grid size manually.")
+    
     grid_rows = side
     grid_cols = side
 
