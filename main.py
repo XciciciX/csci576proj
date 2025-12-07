@@ -19,7 +19,6 @@ MIN_COMPONENT_AREA = 10    # 过滤太小的噪声连通域
 PieceRot = namedtuple("PieceRot", ["piece_idx", "img", "edges"])
 
 
-# ---------- 工具函数 ----------
 
 def load_image(path):
     img = cv2.imread(path)
@@ -61,6 +60,7 @@ def segment_pieces(image):
 
 
 #TODO: change and consider irregular shapes
+#TODO: consider how to make rotate to translate
 def normalize_pieces(pieces):
     """
     把所有 piece 调整到相同大小（简单 resize）。
@@ -81,12 +81,6 @@ def normalize_pieces(pieces):
     return norm_pieces, (target_h, target_w)
 
 
-# def rotate_piece(img, rot_idx):
-#     """
-#     rot_idx = 0,1,2,3 分别对应 0°,90°,180°,270°
-#     """
-#     k = rot_idx % 4
-#     return np.rot90(img, k, axes=(1, 0))  # 逆时针 90*k（注意 axes）
 
 
 def compute_color_hist(strip, bins=COLOR_BINS):
@@ -233,16 +227,19 @@ class PuzzleSolver:
         self.solutions_found = 0
 
         self.sim = []
+        self.candidates = []
 
 
     def solve(self):
-        # Get similarity scores between all edges first
+        
         self._get_score()
+        self._build_candidates(top_k=5)
         self._dfs(0)
         return self.best_layout, self.best_cost
 
     def _get_score(self):
-        sim = np.full((self.num_pieces, self.num_pieces, 4), np.inf, dtype=np.float32)
+        # Get similarity scores between all edges first
+        sim = np.full((self.num_pieces, self.num_pieces, 4, 4), np.inf, dtype=np.float32)
 
 
         for i in range(self.num_pieces):
@@ -251,16 +248,44 @@ class PuzzleSolver:
                 if i == j:
                     continue
                 pj = self.all_rots[j]
-                for rot in range(4):
-                    
-                    sim[i][j][rot] = edge_distance(
-                        pi.edges[rot], pj.edges[(rot + 2) % 4]
-                    )
-
+                for rot1 in range(4):
+                    for rot2 in range(4):
+                        sim[i][j][rot1][rot2] = edge_distance(
+                            pi.edges[rot1], pj.edges[rot2]
+                        )
         self.sim = sim
 
-        
+    def _build_candidates(self, top_k=5):
+        """
+        对于每条边 (i, edge_i)，选出 cost 最小的 top_k 个 (j, edge_j)。
+        candidates[i][edge_i] 是一个 set，元素是 (j, edge_j)。
+        """
+        num_pieces = self.num_pieces
+        candidates = [[set() for _ in range(4)] for _ in range(num_pieces)]
 
+        for i in range(num_pieces):
+            for edge_i in range(4):
+                # 收集所有 (j, edge_j, cost)
+                triplets = []
+                for j in range(num_pieces):
+                    if i == j:
+                        continue
+                    for edge_j in range(4):
+                        cost = self.sim[i, j, edge_i, edge_j]
+                        triplets.append((cost, j, edge_j))
+
+                # 按 cost 排序，取前 top_k
+                triplets.sort(key=lambda x: x[0])
+                for t in triplets[:top_k]:
+                    _, j, edge_j = t
+                    candidates[i][edge_i].add((j, edge_j))
+
+        self.candidates = candidates
+        print("[INFO] Built candidate neighbor sets with top_k =", top_k)
+
+        
+    # TODO: add memory
+    # TODO: dfs search top-k smallest edge difference
     def _dfs(self, pos_idx):
         """
         深度优先 + branch-and-bound：
@@ -283,38 +308,42 @@ class PuzzleSolver:
                 continue
 
             # 如果当前是“只平移不旋转”的例子，可以把 range(4) 改成 [0]
-            for rot in [0]:
+            for rot in range(4): # 0 : 0, 1 : 270, 2 : 180, 3 : 90
                 # key = (piece_idx, rot)
                 # if key not in self.all_rots:
                 #     continue
 
-                piece_rot = self.all_rots[piece_idx]
+            
 
                 # 只考虑与已放好的“上”和“左”的匹配代价
                 add_cost = 0.0
 
-# TODO: calculate all edges first before matching
 # Translate: If we have n pieces, calculate all scores, finish the puzzle from a random start.
-# todo: only a diagonal sim is enough
-                # 上方
+
+                # TOP
                 if r > 0 and self.current_layout[r - 1][c] is not None:
                     up_piece_idx, up_rot = self.current_layout[r - 1][c]
-                    add_cost += self.sim[piece_idx][up_piece_idx][0]
-                    # up_rot_obj = self.all_rots[up_piece_idx][]
-                    # add_cost += edge_distance(
-                    #     up_rot_obj.edges["bottom"],
-                    #     piece_rot.edges["top"]
-                    # )
+                    edge_up_down = (up_rot + 2) % 4   # 上块的 bottom
+                    edge_cur_top = rot                # 当前块的 top
+                    if (piece_idx, edge_cur_top) not in self.candidates[up_piece_idx][edge_up_down]:
+                        continue
+                    # for up_rot: the up_piece_idx edge will be 
+                    # up_rot :  0 1 2 3
+                    # edge_idx: 2 3 0 1
+                    add_cost += self.sim[up_piece_idx, piece_idx, edge_up_down, edge_cur_top]
 
-                # 左方
+                # LEFT
                 if c > 0 and self.current_layout[r][c - 1] is not None:
                     left_piece_idx, left_rot = self.current_layout[r][c - 1]
-                    add_cost += self.sim[piece_idx][left_piece_idx][3]
-                    # left_rot_obj = self.all_rots[(left_piece_idx, left_rot)]
-                    # add_cost += edge_distance(
-                    #     left_rot_obj.edges["right"],
-                    #     piece_rot.edges["left"]
-                    # )
+                    edge_left_right = (left_rot + 1) % 4      # 左块的 right
+                    edge_cur_left   = (rot + 3) % 4
+                    if (piece_idx, edge_cur_left) not in self.candidates[left_piece_idx][edge_left_right]:
+                        continue
+                    # for left_rot: the left_piece_idx edge will be 
+                    # left_rot: 0 1 2 3
+                    # edge_idx: 1 2 3 0
+                    add_cost += self.sim[left_piece_idx, piece_idx, edge_left_right, edge_cur_left]
+                    
                 new_cost = self.current_cost + add_cost
 
                 # branch-and-bound 剪枝：当前 partial cost 已经 >= best，就没必要继续
@@ -358,7 +387,8 @@ def render_layout(best_layout, all_rots, piece_size):
         for c in range(cols):
             piece_idx, rot_idx = best_layout[r][c]
             piece_rot = all_rots[piece_idx]
-            img = piece_rot.img
+            img = rotate_piece(piece_rot.img, rot_idx)
+
             # 确保大小相同
             img = cv2.resize(img, (pw, ph), interpolation=cv2.INTER_AREA)
             y0 = r * ph
@@ -367,6 +397,13 @@ def render_layout(best_layout, all_rots, piece_size):
 
     return canvas
 
+
+def rotate_piece(img, rot_idx):
+    """
+    rot_idx = 0,1,2,3 分别对应 0°,270°,180°,90°
+    顺时针旋转
+    """
+    return np.rot90(img, rot_idx, axes=(0, 1))
 
 def render_animation_sequence(best_layout, all_rots, piece_size, bg_color=(0, 0, 0)):
     """
