@@ -59,26 +59,55 @@ def segment_pieces(image):
     return pieces
 
 
-#TODO: change and consider irregular shapes
 #TODO: consider how to make rotate to translate
-def normalize_pieces(pieces):
-    """
-    把所有 piece 调整到相同大小（简单 resize）。
-    这里用中位数宽高作为目标尺寸。
-    返回：normalized_pieces, (target_h, target_w)
-    """
-    hs = [p.shape[0] for p in pieces]
-    ws = [p.shape[1] for p in pieces]
-    target_h = int(np.median(hs))
-    target_w = int(np.median(ws))
+# The current version is blurry
+def rectify_piece(piece_img, smooth=True):
+    gray = cv2.cvtColor(piece_img, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
 
-    norm_pieces = []
-    for p in pieces:
-        resized = cv2.resize(p, (target_w, target_h), interpolation=cv2.INTER_AREA)
-        norm_pieces.append(resized)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return piece_img
 
-    print(f"[INFO] Normalized piece size to {target_w}x{target_h}")
-    return norm_pieces, (target_h, target_w)
+    cnt = max(contours, key=cv2.contourArea)
+    rect = cv2.minAreaRect(cnt)
+    box = cv2.boxPoints(rect)
+
+    # order four corners
+    pts = np.array(box, dtype="float32")
+    s = pts.sum(axis=1)
+    tl = pts[np.argmin(s)]
+    br = pts[np.argmax(s)]
+    diff = np.diff(pts, axis=1)
+    tr = pts[np.argmin(diff)]
+    bl = pts[np.argmax(diff)]
+    src = np.array([tl, tr, br, bl], dtype="float32")
+
+    w, h = int(rect[1][0]), int(rect[1][1])
+
+    dst = np.array([[0,0],[w-1,0],[w-1,h-1],[0,h-1]], dtype="float32")
+
+    # upscale sampling resolution
+    big = cv2.resize(piece_img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+
+    M = cv2.getPerspectiveTransform(src, dst)
+    rectified = cv2.warpPerspective(
+        big, M, (w*2, h*2),  # double resolution
+        flags=cv2.INTER_CUBIC
+    )
+
+    # shrink back
+    rectified = cv2.resize(rectified, (w, h), interpolation=cv2.INTER_AREA)
+
+    # sharpening pass
+    if smooth:
+        blur = cv2.GaussianBlur(rectified, (0,0), sigmaX=1.1)
+        rectified = cv2.addWeighted(rectified, 1.4, blur, -0.4, 0)
+
+    return rectified
+
+
+#TODO: change and consider irregular shapes
 
 
 
@@ -439,27 +468,32 @@ def render_animation_sequence(best_layout, all_rots, piece_size, bg_color=(0, 0,
 def main(input_path, output_image_path, output_anim_dir=None):
     img = load_image(input_path)
     pieces = segment_pieces(img)
+
     if len(pieces) == 0:
         print("[ERROR] No pieces detected.")
         return
-
-    norm_pieces, piece_size = normalize_pieces(pieces)
+    piece_size = pieces[0].shape[:2]  # 假设所有 piece 大小相同
+    rectified_pieces = [rectify_piece(p) for p in pieces]
+    
+    
 
     # 默认假设是正方形布局：rows = cols = sqrt(N)
 
     # TODO: change this
+
+    # "The image sizes will be same as the test samples you have"
     # 
     # 找出所有 (r, c)，使得 r * c == num_pieces
 
     # 对每个 (r, c) 都跑一次 PuzzleSolver 选 cost 最小的那个
 
-    num_pieces = len(norm_pieces)
+    num_pieces = len(rectified_pieces)
     side = int(round(math.sqrt(num_pieces)))
     
     grid_rows = side
     grid_cols = side
 
-    all_rots = build_all_rotations(norm_pieces)
+    all_rots = build_all_rotations(rectified_pieces)
 
     solver = PuzzleSolver(all_rots, grid_rows, grid_cols)
     best_layout, best_cost = solver.solve()
