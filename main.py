@@ -313,8 +313,7 @@ class PuzzleSolver:
         print("[INFO] Built candidate neighbor sets with top_k =", top_k)
 
         
-    # TODO: add memory
-    # TODO: dfs search top-k smallest edge difference
+    # dfs search top-k smallest edge difference
     def _dfs(self, pos_idx):
         """
         深度优先 + branch-and-bound：
