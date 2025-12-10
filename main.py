@@ -59,9 +59,11 @@ def segment_pieces(image):
     return pieces
 
 
-#TODO: consider how to make rotate to translate
-# The current version is blurry
 def rectify_piece(piece_img, smooth=True):
+    """
+    使用透视变换将歪斜的方块矫正为矩形。
+    先放大 2 倍以提高采样精度，变换后再缩回原尺寸。
+    """
     gray = cv2.cvtColor(piece_img, cv2.COLOR_BGR2GRAY)
     _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
 
@@ -72,38 +74,63 @@ def rectify_piece(piece_img, smooth=True):
     cnt = max(contours, key=cv2.contourArea)
     rect = cv2.minAreaRect(cnt)
     box = cv2.boxPoints(rect)
-
-    # order four corners
+    
+    # 获取宽高（可能有旋转）
+    w, h = rect[1]
+    w, h = int(max(w, 1)), int(max(h, 1))
+    
+    # 对角点进行排序：top-left, top-right, bottom-right, bottom-left
     pts = np.array(box, dtype="float32")
-    s = pts.sum(axis=1)
-    tl = pts[np.argmin(s)]
-    br = pts[np.argmax(s)]
-    diff = np.diff(pts, axis=1)
-    tr = pts[np.argmin(diff)]
-    bl = pts[np.argmax(diff)]
-    src = np.array([tl, tr, br, bl], dtype="float32")
-
-    w, h = int(rect[1][0]), int(rect[1][1])
-
-    dst = np.array([[0,0],[w-1,0],[w-1,h-1],[0,h-1]], dtype="float32")
-
-    # upscale sampling resolution
+    
+    # 计算中心
+    center = pts.mean(axis=0)
+    
+    # 按角度排序（从上-左，顺时针）
+    angles = np.arctan2(pts[:, 1] - center[1], pts[:, 0] - center[0])
+    sorted_indices = np.argsort(angles)
+    pts_sorted = pts[sorted_indices]
+    
+    # 找到最接近左上角的点作为起点
+    distances = np.linalg.norm(pts_sorted - pts_sorted[0], axis=1)
+    # 排序后应该是：左上 -> 右上 -> 右下 -> 左下
+    src_pts = pts_sorted.astype("float32")
+    
+    # 目标矩形的四个角（左上、右上、右下、左下）
+    dst_pts = np.array([
+        [0, 0],
+        [w - 1, 0],
+        [w - 1, h - 1],
+        [0, h - 1]
+    ], dtype="float32")
+    
+    try:
+        # 计算透视变换矩阵
+        M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    except cv2.error:
+        # 如果变换矩阵计算失败，返回原图
+        return piece_img
+    
+    # 先放大 2 倍以提高采样精度
     big = cv2.resize(piece_img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-
-    M = cv2.getPerspectiveTransform(src, dst)
+    M_scaled = M.copy()
+    M_scaled[0, 2] *= 2  # 调整平移参数以适应放大后的图像
+    M_scaled[1, 2] *= 2
+    
+    # 执行透视变换
     rectified = cv2.warpPerspective(
-        big, M, (w*2, h*2),  # double resolution
-        flags=cv2.INTER_CUBIC
+        big, M_scaled, (w * 2, h * 2),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REPLICATE
     )
-
-    # shrink back
+    
+    # 缩回原尺寸
     rectified = cv2.resize(rectified, (w, h), interpolation=cv2.INTER_AREA)
-
-    # sharpening pass
+    
+    # 可选：锐化处理
     if smooth:
-        blur = cv2.GaussianBlur(rectified, (0,0), sigmaX=1.1)
-        rectified = cv2.addWeighted(rectified, 1.4, blur, -0.4, 0)
-
+        blur = cv2.GaussianBlur(rectified, (3, 3), sigmaX=1.0)
+        rectified = cv2.addWeighted(rectified, 1.2, blur, -0.2, 0)
+    
     return rectified
 
 
