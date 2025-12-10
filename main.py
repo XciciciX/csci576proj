@@ -4,13 +4,14 @@ import math
 from collections import namedtuple
 import sys
 import os
-from functools import reduce
+from Puzzle import Puzzle
 from get_frame import solve_packing
 from math import gcd
 from typing import List, Tuple, Dict, Optional
+from functools import reduce
 
 from compute_similarity import compute_piece_edge_descriptors
-from puzzleSolver import PuzzleSolver
+# from puzzleSolver import PuzzleSolver
 
 # ---- 配置参数 ----
 EDGE_STRIP_WIDTH = 10        # 用于提取边缘条带的宽度 (像素)
@@ -184,6 +185,44 @@ def render_frame_layout(
     return canvas
 
 
+def render_layout_pixel(best_solution, all_rots, canvas_size):
+    """
+    Render puzzle solution using pixel-based layout.
+    
+    Args:
+        best_solution: list of dicts with {piece_index, top, left, height, width}
+        all_rots: list of PieceRot objects
+        canvas_size: int, pixel canvas dimension (canvas_size x canvas_size)
+    
+    Returns:
+        canvas: rendered image of canvas_size x canvas_size
+    """
+    if best_solution is None:
+        print("[ERROR] No solution found!")
+        return None
+    
+    canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
+    
+    for placement in best_solution:
+        piece_idx = placement["piece_index"]
+        top = placement["top"]
+        left = placement["left"]
+        height = placement["height"]
+        width = placement["width"]
+        
+        # Get piece image
+        piece_rot = all_rots[piece_idx]
+        piece_img = piece_rot.img
+        
+        # Ensure the piece image matches the expected dimensions
+        piece_img = cv2.resize(piece_img, (width, height), interpolation=cv2.INTER_AREA)
+        
+        # Place on canvas
+        canvas[top:top+height, left:left+width, :] = piece_img
+    
+    return canvas
+
+
 def render_layout(best_layout, all_rots, piece_size):
     """
     根据 best_layout 把拼图拼好。
@@ -260,8 +299,7 @@ def main(input_path, output_image_path, output_anim_dir=None):
     if len(pieces) == 0:
         print("[ERROR] No pieces detected.")
         return
-    # piece_size = pieces[0].shape[:2]  # 假设所有 piece 大小相同
-    # rectified_pieces = [rectify_piece(p) for p in pieces]
+    
     
     # 2. 只取像素尺寸 (h, w)
     piece_sizes_px = [(p.shape[0], p.shape[1]) for p in pieces]
@@ -325,23 +363,27 @@ def main(input_path, output_image_path, output_anim_dir=None):
 
     all_rots = build_all_rotations(pieces)
 
-    solver = PuzzleSolver(all_rots, grid_rows, grid_cols)
-    solutions = solver.irr_solve(canvas_h, canvas_w, piece_sizes_grid)
-    print(f"[INFO] Found {len(solutions)} geometric layout(s).")
+    # solver = PuzzleSolver(all_rots, grid_rows, grid_cols)
+    # solutions = solver.irr_solve(canvas_h, canvas_w, piece_sizes_grid)
+    # print(f"[INFO] Found {len(solutions)} geometric layout(s).")
 
-    for i, sol in enumerate(solutions):
-        frame_image = render_frame_layout(
-            sol,
-            pieces,
-            canvas_h,
-            canvas_w,
-            gcd_h,
-            gcd_w
-        )
-        frame_path = f"{output_image_path}_frame_{i:02d}.png"
-        cv2.imwrite(frame_path, frame_image)
-        print(f"[INFO] Saved frame layout image to {frame_path}")
+    # for i, sol in enumerate(solutions):
+    #     frame_image = render_frame_layout(
+    #         sol,
+    #         pieces,
+    #         canvas_h,
+    #         canvas_w,
+    #         gcd_h,
+    #         gcd_w
+    #     )
+    #     frame_path = f"{output_image_path}_frame_{i:02d}.png"
+    #     cv2.imwrite(frame_path, frame_image)
+    #     print(f"[INFO] Saved frame layout image to {frame_path}")
     
+
+
+
+
 
     # 默认假设是正方形布局：rows = cols = sqrt(N)
 
@@ -353,16 +395,24 @@ def main(input_path, output_image_path, output_anim_dir=None):
 
     # 对每个 (r, c) 都跑一次 PuzzleSolver 选 cost 最小的那个
 
-   
-    # print(f"[INFO] Best layout cost: {best_cost:.4f}")
+    piece_size = pieces[0].shape[:2]  # 假设所有 piece 大小相同
+    rectified_pieces = [rectify_piece(p) for p in pieces]
+    
+    # Use pixel-based solver with canvas size 400x400
+    canvas_size = 400
+    solver = Puzzle(all_rots, canvas_size)
+    best_solution, best_cost = solver.solve()
+    print(f"[INFO] Best layout cost: {best_cost:.4f}")
 
-    # solved_image = render_layout(best_layout, all_rots, piece_size)
-    # cv2.imwrite(output_image_path, solved_image)
-    # print(f"[INFO] Saved solved puzzle image to {output_image_path}")
+    # Render using pixel-based layout
+    solved_image = render_layout_pixel(best_solution, all_rots, canvas_size)
+    cv2.imwrite(output_image_path, solved_image)
+    print(f"[INFO] Saved solved puzzle image to {output_image_path}")
 
+    # TODO: Animation rendering for pixel-based format
     # if output_anim_dir is not None:
     #     os.makedirs(output_anim_dir, exist_ok=True)
-    #     frames = render_animation_sequence(best_layout, all_rots, piece_size)
+    #     frames = render_animation_sequence(best_solution, all_rots, canvas_size)
     #     for i, frame in enumerate(frames):
     #         frame_path = os.path.join(output_anim_dir, f"frame_{i:03d}.png")
     #         cv2.imwrite(frame_path, frame)

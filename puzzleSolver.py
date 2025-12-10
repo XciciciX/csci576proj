@@ -449,6 +449,67 @@ class PuzzleSolver:
 
         dfs()
         return solutions
+    
+
+
+    def solve_packing_2(self):
+        pass
+        # First, we have original pieces.
+        # Do find_same_HW, build_solution_same_HW until no more same H/W groups can be found.
+        # Then, do frame() for all remaining pieces if there is any.
+
+    def find_same_HW(self):
+        # get a union set with same height or width
+        # [H/W] -> set(piece index)
+        # Every piece may be original w or h, need to be recorded in as well
+        # make sure each piece only appear once
+        # get one dict: [H/W] -> set(piece index)
+
+        height_to_indices: Dict[int, List[int]] = {}
+        width_to_indices: Dict[int, List[int]] = {}
+        for idx, prot in enumerate(self.all_rots):
+            ph, pw = prot.shape
+            height_to_indices.setdefault(ph, []).append(idx)
+            width_to_indices.setdefault(pw, []).append(idx)
+        # combine two dicts into one
+        same_HW_dict: Dict[int, List[int]] = {}
+        for h, indices in height_to_indices.items():
+            if len(indices) >= 2:
+                same_HW_dict[h] = indices
+        for w, indices in width_to_indices.items():
+            if w in same_HW_dict and len(indices) >= 2:
+                same_HW_dict[w].append(indices)
+            elif len(indices) >= 2:
+                same_HW_dict[w] = indices
+            
+        return same_HW_dict
+    
+    def build_solution_same_HW(self):
+        pass
+        # For every same map key, we do one of DFS search that is similar to regular one
+
+        # Input: one dict containing [H/W] -> set(piece index)
+        # Search all possible solutions.
+        # DFS: randomly pick one to start, try fill right all first, then down.
+        # 1. (4 edges into consideration) Sim < 0.8
+        # 2. The image size cannot be exceeded
+        # 3. We can calculate all similarity with same size first
+
+        # Then, we need to record the best solution found, see them as a big piece. If it is not a sqare,
+        # cut it into squares.
+
+        # Create a new pieces list, with the best solution found as one piece, and other pieces that are not used.
+    
+    
+    # Repeat find_same_HW and build_solution_same_HW until the total N of the returned new pieces list is the same
+    # return a new pieces list with all pieces that cannot be grouped.
+    
+    def frame():
+        # For all pieces that cannot be grouped, do the regular frame solver.
+        # Each time a possible frame is found, we need to check the score.
+        # If score < threshold, we keep it as a possible solution.
+        # Finally, return best frame found.
+
 
 
 
