@@ -5,6 +5,13 @@ from collections import namedtuple
 import itertools
 import sys
 import os
+from functools import reduce
+from get_frame import solve_packing
+from math import gcd
+from typing import List, Tuple, Dict, Optional
+
+from compute_similarity import compute_piece_edge_descriptors
+from puzzleSolver import PuzzleSolver
 
 # ---- 配置参数 ----
 EDGE_STRIP_WIDTH = 10        # 用于提取边缘条带的宽度 (像素)
@@ -13,12 +20,9 @@ GRAD_BINS = 8               # 梯度方向直方图 bin 数
 ALPHA = 0.5                 # 颜色差权重
 BETAB = 0.5                 # 梯度差权重
 MIN_COMPONENT_AREA = 10    # 过滤太小的噪声连通域
-# MAX_SEARCH_SOLUTIONS = 100000    # 只找一个最优解，够用了
 
 # Store info of a piece in a specific rotation
-PieceRot = namedtuple("PieceRot", ["piece_idx", "img", "edges"])
-
-
+PieceRot = namedtuple("PieceRot", ["piece_idx", "img", "edges", "shape"])
 
 def load_image(path):
     img = cv2.imread(path)
@@ -110,294 +114,76 @@ def rectify_piece(piece_img, smooth=True):
 #TODO: change and consider irregular shapes
 
 
-
-
-def compute_color_hist(strip, bins=COLOR_BINS):
-    hsv = cv2.cvtColor(strip, cv2.COLOR_BGR2HSV)
-    hist = cv2.calcHist([hsv], [0, 1, 2],
-                        None,
-                        [bins, bins, bins],
-                        [0, 180, 0, 256, 0, 256])
-    hist = cv2.normalize(hist, hist, alpha=1.0, beta=0.0,
-                         norm_type=cv2.NORM_L1)
-    return hist.flatten()
-
-
-
-def compute_grad_hist(gray_strip, mag_strip, ang_strip, bins=GRAD_BINS):
-    """
-    梯度方向直方图，angle 在 [0, 2pi)，以 mag 为权重。
-    """
-    # 拉平成 1D
-    angles = ang_strip.flatten()
-    mags = mag_strip.flatten()
-
-    # 映射到 [0, 2pi)
-    angles = (angles + 2 * np.pi) % (2 * np.pi)
-
-    hist = np.zeros(bins, dtype=np.float32)
-    bin_width = 2 * np.pi / bins
-
-    for a, m in zip(angles, mags):
-        b = int(a // bin_width)
-        if 0 <= b < bins:
-            hist[b] += m
-
-    # 归一化
-    if hist.sum() > 0:
-        hist /= hist.sum()
-    return hist
-
-
-def compute_piece_edge_descriptors(piece_img, edge_strip_width=EDGE_STRIP_WIDTH):
-    """
-    对一个 piece（已经是某个固定旋转）的四条边，计算：
-    - 颜色直方图
-    - 梯度方向直方图
-    返回 dict: {"top": desc, "right": desc, "bottom": desc, "left": desc}
-    其中 desc = {"color": color_vec, "grad": grad_vec}
-    """
-    h, w, _ = piece_img.shape
-    k = min(edge_strip_width, h // 3, w // 3)  # 防止太大
-
-    # 获取边缘 strip
-    top_strip = piece_img[0:k, :, :]
-    bottom_strip = piece_img[h - k:h, :, :]
-    left_strip = piece_img[:, 0:k, :]
-    right_strip = piece_img[:, w - k:w, :]
-
-    # 梯度在整张 piece 上算一次，然后取对应 strip
-    gray = cv2.cvtColor(piece_img, cv2.COLOR_BGR2GRAY)
-    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-    mag = np.sqrt(gx ** 2 + gy ** 2)
-    ang = np.arctan2(gy, gx)
-
-    top_mag = mag[0:k, :]
-    top_ang = ang[0:k, :]
-    bottom_mag = mag[h - k:h, :]
-    bottom_ang = ang[h - k:h, :]
-    left_mag = mag[:, 0:k]
-    left_ang = ang[:, 0:k]
-    right_mag = mag[:, w - k:w]
-    right_ang = ang[:, w - k:w]
-
-    edges = {}
-
-    # top
-    edges[0] = [compute_color_hist(top_strip), compute_grad_hist(gray[0:k, :], top_mag, top_ang)]
-    # right
-    edges[1] = [compute_color_hist(right_strip), compute_grad_hist(gray[:, w - k:w], right_mag, right_ang)] 
-    # bottom
-    edges[2] = [compute_color_hist(bottom_strip), compute_grad_hist(gray[h - k:h, :], bottom_mag, bottom_ang)]
-    # left
-    edges[3] = [compute_color_hist(left_strip), compute_grad_hist(gray[:, 0:k], left_mag, left_ang)]    
-
-
-    return edges
-
-def color_distance(c1, c2):
-    # 直方图已经 normalize 了
-    inter = np.minimum(c1, c2).sum()
-    # 交集越大，相似度越高 → 距离越小
-    return 1.0 - inter
-
-def grad_distance(g1, g2):
-    inter = np.minimum(g1, g2).sum()
-    return 1.0 - inter
-
-
-
-def edge_distance(descA, descB, alpha=ALPHA, beta=BETAB):
-    color_diff = color_distance(descA[0], descB[0])
-    grad_diff  = grad_distance(descA[1],  descB[1])
-    return alpha * color_diff + beta * grad_diff
-
-
-
 # ---------- 构建所有旋转版本 ----------
 
-def build_all_rotations(norm_pieces):
+def build_all_rotations(pieces):
     """
     对每个 piece 生成 4 个旋转版本，并计算每个版本的 edge 描述子。
     返回：
         all_rots: (piece_idx, rot_idx) -> PieceRot
     """
     all_rots = []
-    for i, p in enumerate(norm_pieces):
+    for i, p in enumerate(pieces):
         # for rot in range(4):
         #     img_rot = rotate_piece(p, rot)
         edges = compute_piece_edge_descriptors(p)
-        all_rots.append(PieceRot(piece_idx=i, img=p, edges=edges))
+        all_rots.append(PieceRot(piece_idx=i, img=p, edges=edges, shape=p.shape[:2]))
     print(f"[INFO] Built {len(all_rots)} rotated versions.")
     return all_rots
 
 
 
-# ---------- 布局搜索（DFS + 剪枝） ----------
 
-class PuzzleSolver:
-    def __init__(self, all_rots, grid_rows, grid_cols):
-        self.all_rots = all_rots               # dict[(piece_idx, rot_idx)] -> PieceRot
-        self.num_pieces = len(all_rots)
-        self.grid_rows = grid_rows
-        self.grid_cols = grid_cols
+def render_frame_layout(
+    frame: List[Dict],
+    piece_images: List[np.ndarray],
+    canvas_h: int,
+    canvas_w: int,
+    cell_h: int,
+    cell_w: int,
+) -> np.ndarray:
+    """
+    根据 solve_packing 的一个 frame 解，把真实的 piece 图片拼到一个大画布上。
 
-        self.positions = [(r, c) for r in range(grid_rows) for c in range(grid_cols)]
+    frame: solve_packing 返回的某个 solution（list[dict]）
+    piece_images: 原始/rectified 的每块小图列表，第 i 个对应 piece_index = i
+    canvas_h, canvas_w: 画布的网格尺寸（solve_packing 用的 H, W）
+    cell_h, cell_w: 每个网格 cell 对应的像素高 / 像素宽（你用 gcd 算出来的）
 
-        self.best_cost = float("inf")
-        self.best_layout = None  # 2D: (piece_idx, rot_idx)
+    返回：
+        一张大图 np.ndarray，尺寸约为 (canvas_h * cell_h, canvas_w * cell_w, 3)
+    """
+    H = canvas_h * cell_h
+    W = canvas_w * cell_w
+    canvas = np.zeros((H, W, 3), dtype=np.uint8)
 
-        # 当前状态
-        self.current_layout = [[None for _ in range(grid_cols)] for _ in range(grid_rows)]
-        self.used_piece = [False] * self.num_pieces
-        self.current_cost = 0.0
+    for slot in frame:
+        idx   = slot["piece_index"]
+        top   = slot["top"]
+        left  = slot["left"]
+        h_g   = slot["height"]   # grid 单位高度
+        w_g   = slot["width"]    # grid 单位宽度
 
-        self.solutions_found = 0
+        # 目标像素尺寸 = grid 尺寸 * 每个 cell 的像素尺寸
+        target_h = h_g * cell_h
+        target_w = w_g * cell_w
 
-        self.sim = []
-        self.candidates = []
+        piece_img = piece_images[idx]
 
+        # resize 到对应的矩形区域大小
+        piece_resized = cv2.resize(
+            piece_img,
+            (target_w, target_h),
+            interpolation=cv2.INTER_AREA
+        )
 
-    def solve(self):
-        
-        self._get_score()
-        self._build_candidates(top_k=5)
-        self._dfs(0)
-        return self.best_layout, self.best_cost
+        y0 = top * cell_h
+        x0 = left * cell_w
 
-    def _get_score(self):
-        # Get similarity scores between all edges first
-        sim = np.full((self.num_pieces, self.num_pieces, 4, 4), np.inf, dtype=np.float32)
+        canvas[y0:y0 + target_h, x0:x0 + target_w, :] = piece_resized
 
+    return canvas
 
-        for i in range(self.num_pieces):
-            pi = self.all_rots[i]
-            for j in range(self.num_pieces):
-                if i == j:
-                    continue
-                pj = self.all_rots[j]
-                for rot1 in range(4):
-                    for rot2 in range(4):
-                        sim[i][j][rot1][rot2] = edge_distance(
-                            pi.edges[rot1], pj.edges[rot2]
-                        )
-        self.sim = sim
-
-    def _build_candidates(self, top_k=5):
-        """
-        对于每条边 (i, edge_i)，选出 cost 最小的 top_k 个 (j, edge_j)。
-        candidates[i][edge_i] 是一个 set，元素是 (j, edge_j)。
-        """
-        num_pieces = self.num_pieces
-        candidates = [[set() for _ in range(4)] for _ in range(num_pieces)]
-
-        for i in range(num_pieces):
-            for edge_i in range(4):
-                # 收集所有 (j, edge_j, cost)
-                triplets = []
-                for j in range(num_pieces):
-                    if i == j:
-                        continue
-                    for edge_j in range(4):
-                        cost = self.sim[i, j, edge_i, edge_j]
-                        triplets.append((cost, j, edge_j))
-
-                # 按 cost 排序，取前 top_k
-                triplets.sort(key=lambda x: x[0])
-                for t in triplets[:top_k]:
-                    _, j, edge_j = t
-                    candidates[i][edge_i].add((j, edge_j))
-
-        self.candidates = candidates
-        print("[INFO] Built candidate neighbor sets with top_k =", top_k)
-
-        
-    # dfs search top-k smallest edge difference
-    def _dfs(self, pos_idx):
-        """
-        深度优先 + branch-and-bound：
-        - 不再用 solutions_found / MAX_SEARCH_SOLUTIONS 提前退出
-        - 只保留基于 current_cost / best_cost 的安全剪枝
-        """
-        # 所有位置都填满了，检查一次完整布局
-        if pos_idx == len(self.positions):
-            if self.current_cost < self.best_cost:
-                self.best_cost = self.current_cost
-                self.best_layout = [row[:] for row in self.current_layout]
-                print(f"[INFO] Found new best layout, cost={self.best_cost:.4f}")
-            return
-
-        r, c = self.positions[pos_idx]
-
-        # 尝试放每一个尚未使用的 piece
-        for piece_idx in range(self.num_pieces):
-            if self.used_piece[piece_idx]:
-                continue
-
-            # 如果当前是“只平移不旋转”的例子，可以把 range(4) 改成 [0]
-            for rot in range(4): # 0 : 0, 1 : 270, 2 : 180, 3 : 90
-                # key = (piece_idx, rot)
-                # if key not in self.all_rots:
-                #     continue
-
-            
-
-                # 只考虑与已放好的“上”和“左”的匹配代价
-                add_cost = 0.0
-
-# Translate: If we have n pieces, calculate all scores, finish the puzzle from a random start.
-
-                # TOP
-                if r > 0 and self.current_layout[r - 1][c] is not None:
-                    up_piece_idx, up_rot = self.current_layout[r - 1][c]
-                    edge_up_down = (up_rot + 2) % 4   # 上块的 bottom
-                    edge_cur_top = rot                # 当前块的 top
-                    if (piece_idx, edge_cur_top) not in self.candidates[up_piece_idx][edge_up_down]:
-                        continue
-                    # for up_rot: the up_piece_idx edge will be 
-                    # up_rot :  0 1 2 3
-                    # edge_idx: 2 3 0 1
-                    add_cost += self.sim[up_piece_idx, piece_idx, edge_up_down, edge_cur_top]
-
-                # LEFT
-                if c > 0 and self.current_layout[r][c - 1] is not None:
-                    left_piece_idx, left_rot = self.current_layout[r][c - 1]
-                    edge_left_right = (left_rot + 1) % 4      # 左块的 right
-                    edge_cur_left   = (rot + 3) % 4
-                    if (piece_idx, edge_cur_left) not in self.candidates[left_piece_idx][edge_left_right]:
-                        continue
-                    # for left_rot: the left_piece_idx edge will be 
-                    # left_rot: 0 1 2 3
-                    # edge_idx: 1 2 3 0
-                    add_cost += self.sim[left_piece_idx, piece_idx, edge_left_right, edge_cur_left]
-                    
-                new_cost = self.current_cost + add_cost
-
-                # branch-and-bound 剪枝：当前 partial cost 已经 >= best，就没必要继续
-                if new_cost >= self.best_cost:
-                    continue
-                    
-                if add_cost > 0.8:
-                    continue
-
-                # 选择当前 piece+rot 放到 (r, c)
-                self.current_layout[r][c] = (piece_idx, rot)
-                self.used_piece[piece_idx] = True
-                prev_cost = self.current_cost
-                self.current_cost = new_cost
-
-                # 递归到下一个格子
-                self._dfs(pos_idx + 1)
-
-                # 回溯
-                self.current_layout[r][c] = None
-                self.used_piece[piece_idx] = False
-                self.current_cost = prev_cost
-
-
-
-# ---------- 重建图片 & 简易动画 ----------
 
 def render_layout(best_layout, all_rots, piece_size):
     """
@@ -461,6 +247,10 @@ def render_animation_sequence(best_layout, all_rots, piece_size, bg_color=(0, 0,
 
     return frames
 
+# ---------- 用一张 input 图 → 做 frame packing ----------
+
+def _gcd_list(nums: List[int]) -> int:
+    return reduce(gcd, nums)
 
 # ---------- 主入口 ----------
 
@@ -471,9 +261,87 @@ def main(input_path, output_image_path, output_anim_dir=None):
     if len(pieces) == 0:
         print("[ERROR] No pieces detected.")
         return
-    piece_size = pieces[0].shape[:2]  # 假设所有 piece 大小相同
-    rectified_pieces = [rectify_piece(p) for p in pieces]
+    # piece_size = pieces[0].shape[:2]  # 假设所有 piece 大小相同
+    # rectified_pieces = [rectify_piece(p) for p in pieces]
     
+    # 2. 只取像素尺寸 (h, w)
+    piece_sizes_px = [(p.shape[0], p.shape[1]) for p in pieces]
+    print("[INFO] piece_sizes_px =", piece_sizes_px)
+
+    hs = [h for h, w in piece_sizes_px]
+    ws = [w for h, w in piece_sizes_px]
+
+    # 用 gcd 把像素转成“格子单位”
+    gcd_h = _gcd_list(hs)
+    gcd_w = _gcd_list(ws)
+
+    canvas_h_pixels, canvas_w_pixels = 400, 400
+
+    # 确保画布像素维度能被 gcd 整除，否则退化到 cell=1 像素
+    if canvas_h_pixels % gcd_h != 0:
+        print(f"[WARN] canvas_h_pixels {canvas_h_pixels} 不能被 gcd_h {gcd_h} 整除，使用 cell_h=1")
+        gcd_h = 1
+    if canvas_w_pixels % gcd_w != 0:
+        print(f"[WARN] canvas_w_pixels {canvas_w_pixels} 不能被 gcd_w {gcd_w} 整除，使用 cell_w=1")
+        gcd_w = 1
+
+    canvas_h = canvas_h_pixels // gcd_h
+    canvas_w = canvas_w_pixels // gcd_w
+    piece_sizes_grid = [(h // gcd_h, w // gcd_w) for (h, w) in piece_sizes_px]
+
+    print(f"[INFO] cell size = ({gcd_h}, {gcd_w}) pixels")
+    print(f"[INFO] canvas grid size = ({canvas_h}, {canvas_w})")
+    print(f"[INFO] piece sizes in grid = {piece_sizes_grid}")
+    
+    total_piece_area_grid = sum(h * w for h, w in piece_sizes_grid)
+    canvas_area_grid = canvas_h * canvas_w
+    print(f"[INFO] total_piece_area_grid = {total_piece_area_grid}, "
+          f"canvas_area_grid = {canvas_area_grid}")
+    
+     # 3. solve_packing 纯几何拼板（只看 frame）
+    print("[INFO] Running solve_packing (frame only)...")
+
+
+    
+
+    # num_pieces = len(rectified_pieces)
+    # side = int(round(math.sqrt(num_pieces)))
+    
+    # grid_rows = side
+    # grid_cols = side
+
+    # all_rots = build_all_rotations(rectified_pieces)
+
+    # solver = PuzzleSolver(all_rots, grid_rows, grid_cols)
+    # best_layout, best_cost = solver.solve()
+
+    # if best_layout is None:
+    #     print("[ERROR] No layout found.")
+    #     return
+    num_pieces = len(pieces)
+    side = int(round(math.sqrt(num_pieces)))
+    
+    grid_rows = side
+    grid_cols = side
+
+    all_rots = build_all_rotations(pieces)
+
+    solver = PuzzleSolver(all_rots, grid_rows, grid_cols)
+    solutions = solver.irr_solve(canvas_h, canvas_w, piece_sizes_grid)
+    print(f"[INFO] Found {len(solutions)} geometric layout(s).")
+
+    for i, sol in enumerate(solutions):
+        frame_image = render_frame_layout(
+            sol,
+            pieces,
+            canvas_h,
+            canvas_w,
+            gcd_h,
+            gcd_w
+        )
+        frame_path = f"{output_image_path}_frame_{i:02d}.png"
+        cv2.imwrite(frame_path, frame_image)
+        print(f"[INFO] Saved frame layout image to {frame_path}")
     
 
     # 默认假设是正方形布局：rows = cols = sqrt(N)
@@ -486,34 +354,20 @@ def main(input_path, output_image_path, output_anim_dir=None):
 
     # 对每个 (r, c) 都跑一次 PuzzleSolver 选 cost 最小的那个
 
-    num_pieces = len(rectified_pieces)
-    side = int(round(math.sqrt(num_pieces)))
-    
-    grid_rows = side
-    grid_cols = side
+   
+    # print(f"[INFO] Best layout cost: {best_cost:.4f}")
 
-    all_rots = build_all_rotations(rectified_pieces)
+    # solved_image = render_layout(best_layout, all_rots, piece_size)
+    # cv2.imwrite(output_image_path, solved_image)
+    # print(f"[INFO] Saved solved puzzle image to {output_image_path}")
 
-    solver = PuzzleSolver(all_rots, grid_rows, grid_cols)
-    best_layout, best_cost = solver.solve()
-
-    if best_layout is None:
-        print("[ERROR] No layout found.")
-        return
-
-    print(f"[INFO] Best layout cost: {best_cost:.4f}")
-
-    solved_image = render_layout(best_layout, all_rots, piece_size)
-    cv2.imwrite(output_image_path, solved_image)
-    print(f"[INFO] Saved solved puzzle image to {output_image_path}")
-
-    if output_anim_dir is not None:
-        os.makedirs(output_anim_dir, exist_ok=True)
-        frames = render_animation_sequence(best_layout, all_rots, piece_size)
-        for i, frame in enumerate(frames):
-            frame_path = os.path.join(output_anim_dir, f"frame_{i:03d}.png")
-            cv2.imwrite(frame_path, frame)
-        print(f"[INFO] Saved {len(frames)} animation frames to {output_anim_dir}")
+    # if output_anim_dir is not None:
+    #     os.makedirs(output_anim_dir, exist_ok=True)
+    #     frames = render_animation_sequence(best_layout, all_rots, piece_size)
+    #     for i, frame in enumerate(frames):
+    #         frame_path = os.path.join(output_anim_dir, f"frame_{i:03d}.png")
+    #         cv2.imwrite(frame_path, frame)
+    #     print(f"[INFO] Saved {len(frames)} animation frames to {output_anim_dir}")
 
 
 if __name__ == "__main__":
