@@ -34,11 +34,12 @@ class PuzzleSolver:
         self._dfs(0)
         return self.best_layout, self.best_cost
     
-    def irr_solve(self, canvas_h, canvas_w, pieces):
-    
+    def irr_solve(self, canvas_h, canvas_w, pieces_grid: Optional[List[Tuple[int, int]]] = None):
+
         self._get_score()
-        
-        return self._irregular(canvas_h, canvas_w, pieces)
+        self._build_candidates(top_k=5)
+
+        return self._irregular(canvas_h, canvas_w, pieces_grid)
         # return self.best_layout, self.best_cost
 
 
@@ -87,6 +88,52 @@ class PuzzleSolver:
 
         self.candidates = candidates
         print("[INFO] Built candidate neighbor sets with top_k =", top_k)
+
+    def _sort_groups_by_similarity(self, height_to_indices: Dict[int, List[int]], 
+                                    width_to_indices: Dict[int, List[int]], 
+                                    top_k: int = 3) -> Tuple[Dict[int, List[int]], Dict[int, List[int]]]:
+        """
+        对 height_to_indices 和 width_to_indices 中的每个列表进行排序：
+        根据列表中 pieces 之间的最小相似度来排序。
+        
+        对于高度相同的 pieces，计算它们之间的相似度（取所有边对的最小值）。
+        然后按相似度从小到大排序（保留全部，不截断）。
+        
+        返回: (sorted_height_to_indices, sorted_width_to_indices)
+        """
+        def sort_group_by_similarity(indices_list: List[int]) -> List[int]:
+            """对一个 piece 列表按相似度排序，返回排序后的全部 pieces"""
+            if len(indices_list) <= 1:
+                return indices_list
+            
+            # 计算列表中每个 piece 与其他 pieces 的相似度
+            similarities = []
+            for i, idx_i in enumerate(indices_list):
+                min_sim_to_others = float('inf')
+                for idx_j in indices_list:
+                    if idx_i != idx_j:
+                        # 取所有边对中最小的相似度
+                        min_sim = np.min(self.sim[idx_i, idx_j, :, :])
+                        min_sim_to_others = min(min_sim_to_others, min_sim)
+                similarities.append((min_sim_to_others, idx_i))
+            
+            # 按相似度从小到大排序（保留全部）
+            similarities.sort(key=lambda x: x[0])
+            sorted_indices = [idx for _, idx in similarities]  # 不截断，保留全部
+            return sorted_indices
+        
+        # 排序 height_to_indices
+        sorted_height_to_indices = {}
+        for h, indices in height_to_indices.items():
+            sorted_height_to_indices[h] = sort_group_by_similarity(indices)
+        
+        # 排序 width_to_indices
+        sorted_width_to_indices = {}
+        for w, indices in width_to_indices.items():
+            sorted_width_to_indices[w] = sort_group_by_similarity(indices)
+        
+        print(f"[INFO] Sorted height/width groups by similarity (kept all pieces)")
+        return sorted_height_to_indices, sorted_width_to_indices
 
         
     # dfs search top-k smallest edge difference
@@ -171,230 +218,242 @@ class PuzzleSolver:
                 self.used_piece[piece_idx] = False
                 self.current_cost = prev_cost
 
-    def _irregular(self, canvas_h, canvas_w, pieces):
-        solutions = solve_packing(
+    def _irregular(self, canvas_h, canvas_w, pieces_grid: Optional[List[Tuple[int, int]]] = None):
+        solutions = self.solve_packing(
             canvas_h,
             canvas_w,
-            pieces,
-            max_solutions=10,          # 最多保留 200 个 frame
+            pieces_grid=pieces_grid,
+            max_solutions=20,          # 最多保留 10 个 frame
             allow_rotate=False,
-            # similarities=self.sim,  # ★ 加上相似度
-            # per_piece_k=2,              # 每个 piece 选 2 个强配对
-            # max_strong_pairs=None,      # 或者设为 3*len(pieces) 控制一下
         )
         return solutions
     
 
-def solve_packing(
-    canvas_h: int,
-    canvas_w: int,
-    pieces: List[Tuple[int, int]],
-    max_solutions: Optional[int] = 10,
-    allow_rotate: bool = True,
-) -> List[List[Dict]]:
-    """
-    在一个 H×W 的整数网格画布上，铺一组长方形块，返回所有可行铺法（不重叠、刚好铺满）。
+    def solve_packing(
+        self,
+        canvas_h: int,
+        canvas_w: int,
+        pieces_grid: Optional[List[Tuple[int, int]]] = None,
 
-    这里做了去重：
-    - 对于尺寸相同的 piece，只关心“格子上矩形尺寸的排布”是否不同。
-    - 也就是说，如果两个解只是交换了相同尺寸的 index，会被视为同一个 frame，只保留一个。
-
-    同时在 DFS 中加入一个基于“同高/同宽优先”的 heuristic：
-    - 在格子 (r,c) 放块时：
-        * 如果左边已有块，则优先尝试“高度 = 左边块高度”的 piece；
-        * 如果上边已有块，则优先尝试“宽度 = 上边块宽度”的 piece；
-    """
-
-    n = len(pieces)
-    total_area = sum(h * w for h, w in pieces)
-    canvas_area = canvas_h * canvas_w
-    if total_area != canvas_area:
-        print(f"[WARN] total piece area ({total_area}) != canvas area ({canvas_area}), "
-              "可能不存在完全铺满的解。")
-
-    # 画布：-1 表示空，>=0 表示对应的 piece_index
-    canvas = [[-1] * canvas_w for _ in range(canvas_h)]
-    used = [False] * n
-    # 记录当前每个 piece 放置时的 (h, w)，用于生成解和 frame
-    current_orient: List[Optional[Tuple[int, int]]] = [None] * n
-    solutions: List[List[Dict]] = []
-
-    # 用于“按 frame 去重”的集合
-    # 元素是：tuple(tuple(row), ...) 形式的 type_id 网格
-    seen_frames = set()
-
-    # ====== 预计算：按原始尺寸分组 ======
-    height_to_indices: Dict[int, List[int]] = {}
-    width_to_indices: Dict[int, List[int]] = {}
-    for idx, (ph, pw) in enumerate(pieces):
-        height_to_indices.setdefault(ph, []).append(idx)
-        width_to_indices.setdefault(pw, []).append(idx)
-
-    def find_empty():
-        """找到第一个空格子 (r, c)，找不到则返回 (None, None)"""
-        for r in range(canvas_h):
-            for c in range(canvas_w):
-                if canvas[r][c] == -1:
-                    return r, c
-        return None, None
-
-    def can_place(idx: int, r: int, c: int, h: int, w: int) -> bool:
-        """检查 piece idx 放在 (r,c) 顶点、高度 h、宽度 w 是否会出界或重叠"""
-        if r + h > canvas_h or c + w > canvas_w:
-            return False
-        for i in range(r, r + h):
-            row = canvas[i]
-            for j in range(c, c + w):
-                if row[j] != -1:
-                    return False
-        return True
-
-    def place(idx: int, r: int, c: int, h: int, w: int, val: int):
-        """在 canvas 上填充/清空某个块"""
-        for i in range(r, r + h):
-            for j in range(c, c + w):
-                canvas[i][j] = val
-
-    def build_frame_signature() -> Tuple[Tuple[int, ...], ...]:
+        max_solutions: Optional[int] = 10,
+        allow_rotate: bool = True,
+    ) -> List[List[Dict]]:
         """
-        基于当前 canvas + current_orient，构建“按尺寸的 frame 网格签名”。
+        在一个 H×W 的整数网格画布上，铺一组长方形块，返回所有可行铺法（不重叠、刚好铺满）。
+
+        这里做了去重：
+        - 对于尺寸相同的 piece，只关心“格子上矩形尺寸的排布”是否不同。
+        - 也就是说，如果两个解只是交换了相同尺寸的 index，会被视为同一个 frame，只保留一个。
+
+        同时在 DFS 中加入一个基于“同高/同宽优先”的 heuristic：
+        - 在格子 (r,c) 放块时：
+            * 如果左边已有块，则优先尝试“高度 = 左边块高度”的 piece；
+            * 如果上边已有块，则优先尝试“宽度 = 上边块宽度”的 piece；
         """
-        shape_to_id: Dict[Tuple[int, int], int] = {}
-        next_id = 0
 
-        frame_grid = [[-1] * canvas_w for _ in range(canvas_h)]
 
-        for y in range(canvas_h):
-            for x in range(canvas_w):
-                idx = canvas[y][x]
-                if idx == -1:
-                    frame_grid[y][x] = -1
-                else:
-                    h, w = current_orient[idx]
-                    key = (h, w)
-                    if key not in shape_to_id:
-                        shape_to_id[key] = next_id
-                        next_id += 1
-                    frame_grid[y][x] = shape_to_id[key]
+        # 画布：-1 表示空，>=0 表示对应的 piece_index
+        canvas = [[-1] * canvas_w for _ in range(canvas_h)]
+        used = [False] * self.num_pieces
+        # 记录当前每个 piece 放置时的 (h, w)，用于生成解和 frame
+        current_orient: List[Optional[Tuple[int, int]]] = [None] * self.num_pieces
+        solutions: List[List[Dict]] = []
 
-        return tuple(tuple(row) for row in frame_grid)
+        # 用于“按 frame 去重”的集合
+        # 元素是：tuple(tuple(row), ...) 形式的 type_id 网格
+        seen_frames = set()
 
-    def dfs():
-        # 控制解的数量（按“不同 frame”来数）
-        if max_solutions is not None and len(solutions) >= max_solutions:
-            return
+        # ====== 预计算：按原始尺寸分组 ======
+        # pieces_grid: list of (h,w) in grid units for each original piece index
+        # If provided, use it; otherwise fall back to self.all_rots' shape (assumed to be grid units)
+        piece_shapes: List[Tuple[int, int]] = []
+        height_to_indices: Dict[int, List[int]] = {}
+        width_to_indices: Dict[int, List[int]] = {}
+        if pieces_grid is not None:
+            piece_shapes = pieces_grid
+            for idx, (ph, pw) in enumerate(pieces_grid):
+                height_to_indices.setdefault(ph, []).append(idx)
+                width_to_indices.setdefault(pw, []).append(idx)
+        else:
+            for idx, prot in enumerate(self.all_rots):
+                ph, pw = prot.shape
+                piece_shapes.append((ph, pw))
+                height_to_indices.setdefault(ph, []).append(idx)
+                width_to_indices.setdefault(pw, []).append(idx)
 
-        r, c = find_empty()
-        # 没有空格子了 → 找到一种完整拼法
-        if r is None:
-            sig = build_frame_signature()
-            if sig in seen_frames:
+        # 按相似度排序高度和宽度组
+        height_to_indices, width_to_indices = self._sort_groups_by_similarity(
+            height_to_indices, width_to_indices
+        )
+
+
+        def find_empty():
+            """找到第一个空格子 (r, c)，找不到则返回 (None, None)"""
+            for r in range(canvas_h):
+                for c in range(canvas_w):
+                    if canvas[r][c] == -1:
+                        return r, c
+            return None, None
+
+        def can_place(idx: int, r: int, c: int, h: int, w: int) -> bool:
+            """检查 piece idx 放在 (r,c) 顶点、高度 h、宽度 w 是否会出界或重叠"""
+            if r + h > canvas_h or c + w > canvas_w:
+                return False
+            for i in range(r, r + h):
+                row = canvas[i]
+                for j in range(c, c + w):
+                    if row[j] != -1:
+                        return False
+            return True
+
+        def place(idx: int, r: int, c: int, h: int, w: int, val: int):
+            """在 canvas 上填充/清空某个块"""
+            for i in range(r, r + h):
+                for j in range(c, c + w):
+                    canvas[i][j] = val
+
+        def build_frame_signature() -> Tuple[Tuple[int, ...], ...]:
+            """
+            基于当前 canvas + current_orient，构建“按尺寸的 frame 网格签名”。
+            """
+            shape_to_id: Dict[Tuple[int, int], int] = {}
+            next_id = 0
+
+            frame_grid = [[-1] * canvas_w for _ in range(canvas_h)]
+
+            for y in range(canvas_h):
+                for x in range(canvas_w):
+                    idx = canvas[y][x]
+                    if idx == -1:
+                        frame_grid[y][x] = -1
+                    else:
+                        h, w = current_orient[idx]
+                        key = (h, w)
+                        if key not in shape_to_id:
+                            shape_to_id[key] = next_id
+                            next_id += 1
+                        frame_grid[y][x] = shape_to_id[key]
+
+            return tuple(tuple(row) for row in frame_grid)
+
+        def dfs():
+            # 控制解的数量（按“不同 frame”来数）
+            if max_solutions is not None and len(solutions) >= max_solutions:
                 return
-            seen_frames.add(sig)
 
-            sol: List[Dict] = []
-            for i in range(n):
-                h, w = current_orient[i]
-                # 找这个 piece 在 canvas 上的左上角
-                tl = None
-                for y in range(canvas_h):
-                    for x in range(canvas_w):
-                        if canvas[y][x] == i:
-                            tl = (y, x)
+            r, c = find_empty()
+            # 没有空格子了 → 找到一种完整拼法
+            if r is None:
+                sig = build_frame_signature()
+                if sig in seen_frames:
+                    return
+                seen_frames.add(sig)
+
+                sol: List[Dict] = []
+                for i in range(self.num_pieces):
+                    h, w = current_orient[i]
+                    # 找这个 piece 在 canvas 上的左上角
+                    tl = None
+                    for y in range(canvas_h):
+                        for x in range(canvas_w):
+                            if canvas[y][x] == i:
+                                tl = (y, x)
+                                break
+                        if tl is not None:
                             break
-                    if tl is not None:
-                        break
-                sol.append(
-                    {
-                        "piece_index": i,
-                        "top": tl[0],
-                        "left": tl[1],
-                        "height": h,
-                        "width": w,
-                    }
-                )
-            solutions.append(sol)
-            return
+                    sol.append(
+                        {
+                            "piece_index": i,
+                            "top": tl[0],
+                            "left": tl[1],
+                            "height": h,
+                            "width": w,
+                        }
+                    )
+                solutions.append(sol)
+                return
 
-        # ========= 根据左/上邻居，生成“优先考虑的 piece 顺序” =========
-        left_h = left_w = None
-        top_h = top_w = None
+            # ========= 根据左/上邻居，生成“优先考虑的 piece 顺序” =========
+            left_h = left_w = None
+            top_h = top_w = None
 
-        # 左邻居
-        if c > 0 and canvas[r][c - 1] != -1:
-            idx_left = canvas[r][c - 1]
-            left_h, left_w = current_orient[idx_left]
+            # 左邻居
+            if c > 0 and canvas[r][c - 1] != -1:
+                idx_left = canvas[r][c - 1]
+                left_h, left_w = current_orient[idx_left]
 
-        # 上邻居
-        if r > 0 and canvas[r - 1][c] != -1:
-            idx_top = canvas[r - 1][c]
-            top_h, top_w = current_orient[idx_top]
+            # 上邻居
+            if r > 0 and canvas[r - 1][c] != -1:
+                idx_top = canvas[r - 1][c]
+                top_h, top_w = current_orient[idx_top]
 
-        ordered_indices: List[int] = []
-        seen_idx = set()
+            ordered_indices: List[int] = []
+            seen_idx = set()
 
-        # 1) 优先：原始高度 = left_h 的块
-        if left_h is not None:
-            for idx in height_to_indices.get(left_h, []):
+            # 1) 优先：原始高度 = left_h 的块
+            if left_h is not None:
+                for idx in height_to_indices.get(left_h, []):
+                    
+                    if not used[idx] and idx not in seen_idx:
+                        # TODO when similarity is very small, prioritize
+                        ordered_indices.append(idx)
+                        seen_idx.add(idx)
+
+            # 2) 其次：原始宽度 = top_w 的块
+            if top_w is not None:
+                for idx in width_to_indices.get(top_w, []):
+                    if not used[idx] and idx not in seen_idx:
+                        ordered_indices.append(idx)
+                        seen_idx.add(idx)
+
+            # 3) 最后：其他所有未使用的块
+            for idx in range(self.num_pieces):
                 if not used[idx] and idx not in seen_idx:
                     ordered_indices.append(idx)
                     seen_idx.add(idx)
 
-        # 2) 其次：原始宽度 = top_w 的块
-        if top_w is not None:
-            for idx in width_to_indices.get(top_w, []):
-                if not used[idx] and idx not in seen_idx:
-                    ordered_indices.append(idx)
-                    seen_idx.add(idx)
+            # 本格子“尺寸去重”：同样尺寸 (h,w) 在这个格子只尝试一次
+            seen_shapes_this_cell = set()
 
-        # 3) 最后：其他所有未使用的块
-        for idx in range(n):
-            if not used[idx] and idx not in seen_idx:
-                ordered_indices.append(idx)
-                seen_idx.add(idx)
+            # 按 ordered_indices 的顺序 DFS
+            for idx in ordered_indices:
+                ph, pw = piece_shapes[idx]  # 从 piece_shapes 获取（网格单位）
 
-        # 本格子“尺寸去重”：同样尺寸 (h,w) 在这个格子只尝试一次
-        seen_shapes_this_cell = set()
+                # 决定这个 piece 的所有可选朝向
+                if allow_rotate and ph != pw:
+                    orientations = [(ph, pw), (pw, ph)]
+                else:
+                    orientations = [(ph, pw)]
 
-        # 按 ordered_indices 的顺序 DFS
-        for idx in ordered_indices:
-            ph, pw = pieces[idx]
+                for h, w in orientations:
+                    if not can_place(idx, r, c, h, w):
+                        continue
 
-            # 决定这个 piece 的所有可选朝向
-            if allow_rotate and ph != pw:
-                orientations = [(ph, pw), (pw, ph)]
-            else:
-                orientations = [(ph, pw)]
+                    shape_key = (h, w)
+                    if shape_key in seen_shapes_this_cell:
+                        continue
+                    seen_shapes_this_cell.add(shape_key)
 
-            for h, w in orientations:
-                if not can_place(idx, r, c, h, w):
-                    continue
+                    # 放下去
+                    used[idx] = True
+                    current_orient[idx] = (h, w)
+                    place(idx, r, c, h, w, idx)
 
-                shape_key = (h, w)
-                if shape_key in seen_shapes_this_cell:
-                    continue
-                seen_shapes_this_cell.add(shape_key)
+                    # 递归
+                    dfs()
 
-                # 放下去
-                used[idx] = True
-                current_orient[idx] = (h, w)
-                place(idx, r, c, h, w, idx)
+                    # 回溯
+                    place(idx, r, c, h, w, -1)
+                    used[idx] = False
+                    current_orient[idx] = None
 
-                # 递归
-                dfs()
-
-                # 回溯
-                place(idx, r, c, h, w, -1)
-                used[idx] = False
-                current_orient[idx] = None
-
-    dfs()
-    return solutions
+        dfs()
+        return solutions
 
 
 
 
 
 
-    
+        
 

@@ -2,7 +2,6 @@ import cv2
 import numpy as np
 import math
 from collections import namedtuple
-import itertools
 import sys
 import os
 from functools import reduce
