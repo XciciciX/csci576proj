@@ -16,7 +16,7 @@ MIN_COMPONENT_AREA = 10    # 过滤太小的噪声连通域
 # MAX_SEARCH_SOLUTIONS = 100000    # 只找一个最优解，够用了
 
 # Store info of a piece in a specific rotation
-PieceRot = namedtuple("PieceRot", ["piece_idx", "img", "edges"])
+PieceRot = namedtuple("PieceRot", ["piece_idx", "img", "edges", "edge_lengths"])
 
 
 
@@ -255,7 +255,18 @@ def build_all_rotations(norm_pieces):
         # for rot in range(4):
         #     img_rot = rotate_piece(p, rot)
         edges = compute_piece_edge_descriptors(p)
-        all_rots.append(PieceRot(piece_idx=i, img=p, edges=edges))
+
+        # Calculate edge lengths
+        # edges: {0: top, 1: right, 2: bottom, 3: left}
+        h, w = p.shape[:2]
+        edge_lengths = {
+            0: w,  # top edge length = width
+            1: h,  # right edge length = height
+            2: w,  # bottom edge length = width
+            3: h   # left edge length = height
+        }
+
+        all_rots.append(PieceRot(piece_idx=i, img=p, edges=edges, edge_lengths=edge_lengths))
     print(f"[INFO] Built {len(all_rots)} rotated versions.")
     return all_rots
 
@@ -289,7 +300,7 @@ class PuzzleSolver:
     def solve(self):
         
         self._get_score()
-        self._build_candidates(top_k=5)
+        self._build_candidates(top_k=6)
         self._dfs(0)
         return self.best_layout, self.best_cost
 
@@ -311,24 +322,35 @@ class PuzzleSolver:
                         )
         self.sim = sim
 
-    def _build_candidates(self, top_k=5):
+    def _build_candidates(self, top_k=5, edge_length_tolerance=2):
         """
         对于每条边 (i, edge_i)，选出 cost 最小的 top_k 个 (j, edge_j)。
+        只考虑边缘长度兼容的边（length差距在tolerance以内）。
         candidates[i][edge_i] 是一个 set，元素是 (j, edge_j)。
         """
         num_pieces = self.num_pieces
         candidates = [[set() for _ in range(4)] for _ in range(num_pieces)]
 
+        empty_candidate_count = 0
+
         for i in range(num_pieces):
+            pi = self.all_rots[i]
             for edge_i in range(4):
-                # 收集所有 (j, edge_j, cost)
+                # 收集所有 (j, edge_j, cost)，但只考虑边缘长度兼容的
                 triplets = []
+                edge_i_length = pi.edge_lengths[edge_i]
+
                 for j in range(num_pieces):
                     if i == j:
                         continue
+                    pj = self.all_rots[j]
                     for edge_j in range(4):
-                        cost = self.sim[i, j, edge_i, edge_j]
-                        triplets.append((cost, j, edge_j))
+                        edge_j_length = pj.edge_lengths[edge_j]
+
+                        # 只有边缘长度兼容时才考虑
+                        if abs(edge_i_length - edge_j_length) <= edge_length_tolerance:
+                            cost = self.sim[i, j, edge_i, edge_j]
+                            triplets.append((cost, j, edge_j))
 
                 # 按 cost 排序，取前 top_k
                 triplets.sort(key=lambda x: x[0])
@@ -336,8 +358,14 @@ class PuzzleSolver:
                     _, j, edge_j = t
                     candidates[i][edge_i].add((j, edge_j))
 
+                # 检查是否有空候选
+                if len(candidates[i][edge_i]) == 0:
+                    empty_candidate_count += 1
+
         self.candidates = candidates
-        print("[INFO] Built candidate neighbor sets with top_k =", top_k)
+        print(f"[INFO] Built candidate neighbor sets with top_k={top_k}, edge_length_tolerance={edge_length_tolerance}")
+        if empty_candidate_count > 0:
+            print(f"[WARNING] {empty_candidate_count} edges have no compatible candidates!")
 
         
     # dfs search top-k smallest edge difference
@@ -446,6 +474,7 @@ def render_layout(best_layout, all_rots, piece_size):
 
             # 确保大小相同
             img = cv2.resize(img, (pw, ph), interpolation=cv2.INTER_AREA)
+            # ph, pw = img.shape[:2]
             y0 = r * ph
             x0 = c * pw
             canvas[y0:y0 + ph, x0:x0 + pw, :] = img
