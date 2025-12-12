@@ -1,23 +1,30 @@
-from compute_similarity import edge_distance
+from compute_similarity import edge_distance, compute_piece_edge_descriptors
 import numpy as np
-
+from collections import namedtuple
 from typing import List, Tuple, Dict, Optional
+from utils import rotate_piece, crop_background
+
+
+# Store info of a piece in a specific rotation
+PieceRot = namedtuple("PieceRot", ["piece_idx", "img", "edges", "shape"])
+
 # ---------- 布局搜索（DFS + 剪枝） ----------
 
 class PuzzleSolver:
-    def __init__(self, all_rots, grid_rows, grid_cols):
-        self.all_rots = all_rots               # dict[(piece_idx, rot_idx)] -> PieceRot
-        self.num_pieces = len(all_rots)
+    def __init__(self, pieces, grid_rows, grid_cols):
+        self.all_rots = {}
+        self.pieces = pieces               # dict[(piece_idx, rot_idx)] -> PieceRot
+        self.num_pieces = len(pieces)
+    
+        # DFS Usage
         self.grid_rows = grid_rows
         self.grid_cols = grid_cols
-
-        self.positions = [(r, c) for r in range(grid_rows) for c in range(grid_cols)]
+        self.positions = [(r, c) for r in range(self.grid_rows) for c in range(self.grid_cols)]
 
         self.best_cost = float("inf")
         self.best_layout = None  # 2D: (piece_idx, rot_idx)
 
-        # 当前状态
-        self.current_layout = [[None for _ in range(grid_cols)] for _ in range(grid_rows)]
+        self.current_layout = [[None for _ in range(self.grid_cols)] for _ in range(self.grid_rows)]
         self.used_piece = [False] * self.num_pieces
         self.current_cost = 0.0
 
@@ -27,20 +34,21 @@ class PuzzleSolver:
         self.candidates = []
 
 
+    
+        # Grouping
+        self.height_to_indices: Dict[int, List[int]] = {}
+        self.width_to_indices: Dict[int, List[int]] = {}
+
+        self.used_index = set()
+
+
+
     def solve(self):
         
         self._get_score()
-        self._build_candidates(top_k=5)
+        self._build_candidates(top_k=6)
         self._dfs(0)
         return self.best_layout, self.best_cost
-    
-    def irr_solve(self, canvas_h, canvas_w, pieces_grid: Optional[List[Tuple[int, int]]] = None):
-
-        self._get_score()
-        self._build_candidates(top_k=5)
-
-        return self._irregular(canvas_h, canvas_w, pieces_grid)
-        # return self.best_layout, self.best_cost
 
 
     def _get_score(self):
@@ -89,62 +97,16 @@ class PuzzleSolver:
         self.candidates = candidates
         print("[INFO] Built candidate neighbor sets with top_k =", top_k)
 
-    def _sort_groups_by_similarity(self, height_to_indices: Dict[int, List[int]], 
-                                    width_to_indices: Dict[int, List[int]], 
-                                    top_k: int = 3) -> Tuple[Dict[int, List[int]], Dict[int, List[int]]]:
-        """
-        对 height_to_indices 和 width_to_indices 中的每个列表进行排序：
-        根据列表中 pieces 之间的最小相似度来排序。
-        
-        对于高度相同的 pieces，计算它们之间的相似度（取所有边对的最小值）。
-        然后按相似度从小到大排序（保留全部，不截断）。
-        
-        返回: (sorted_height_to_indices, sorted_width_to_indices)
-        """
-        def sort_group_by_similarity(indices_list: List[int]) -> List[int]:
-            """对一个 piece 列表按相似度排序，返回排序后的全部 pieces"""
-            if len(indices_list) <= 1:
-                return indices_list
-            
-            # 计算列表中每个 piece 与其他 pieces 的相似度
-            similarities = []
-            for i, idx_i in enumerate(indices_list):
-                min_sim_to_others = float('inf')
-                for idx_j in indices_list:
-                    if idx_i != idx_j:
-                        # 取所有边对中最小的相似度
-                        min_sim = np.min(self.sim[idx_i, idx_j, :, :])
-                        min_sim_to_others = min(min_sim_to_others, min_sim)
-                similarities.append((min_sim_to_others, idx_i))
-            
-            # 按相似度从小到大排序（保留全部）
-            similarities.sort(key=lambda x: x[0])
-            sorted_indices = [idx for _, idx in similarities]  # 不截断，保留全部
-            return sorted_indices
-        
-        # 排序 height_to_indices
-        sorted_height_to_indices = {}
-        for h, indices in height_to_indices.items():
-            sorted_height_to_indices[h] = sort_group_by_similarity(indices)
-        
-        # 排序 width_to_indices
-        sorted_width_to_indices = {}
-        for w, indices in width_to_indices.items():
-            sorted_width_to_indices[w] = sort_group_by_similarity(indices)
-        
-        print(f"[INFO] Sorted height/width groups by similarity (kept all pieces)")
-        return sorted_height_to_indices, sorted_width_to_indices
 
-        
     # dfs search top-k smallest edge difference
-    def _dfs(self, pos_idx):
+    def _dfs(self, pos_idx, n):
         """
         深度优先 + branch-and-bound：
         - 不再用 solutions_found / MAX_SEARCH_SOLUTIONS 提前退出
         - 只保留基于 current_cost / best_cost 的安全剪枝
         """
         # 所有位置都填满了，检查一次完整布局
-        if pos_idx == len(self.positions):
+        if pos_idx == n:
             if self.current_cost < self.best_cost:
                 self.best_cost = self.current_cost
                 self.best_layout = [row[:] for row in self.current_layout]
@@ -160,16 +122,8 @@ class PuzzleSolver:
 
             # 如果当前是“只平移不旋转”的例子，可以把 range(4) 改成 [0]
             for rot in range(4): # 0 : 0, 1 : 270, 2 : 180, 3 : 90
-                # key = (piece_idx, rot)
-                # if key not in self.all_rots:
-                #     continue
-
-            
-
                 # 只考虑与已放好的“上”和“左”的匹配代价
                 add_cost = 0.0
-
-# Translate: If we have n pieces, calculate all scores, finish the puzzle from a random start.
 
                 # TOP
                 if r > 0 and self.current_layout[r - 1][c] is not None:
@@ -211,281 +165,231 @@ class PuzzleSolver:
                 self.current_cost = new_cost
 
                 # 递归到下一个格子
-                self._dfs(pos_idx + 1)
+                self._dfs(pos_idx + 1, n)
 
                 # 回溯
                 self.current_layout[r][c] = None
                 self.used_piece[piece_idx] = False
                 self.current_cost = prev_cost
 
-    def _irregular(self, canvas_h, canvas_w, pieces_grid: Optional[List[Tuple[int, int]]] = None):
-        solutions = self.solve_packing(
-            canvas_h,
-            canvas_w,
-            pieces_grid=pieces_grid,
-            max_solutions=20,          # 最多保留 10 个 frame
-            allow_rotate=False,
-        )
-        return solutions
-    
-
-    def solve_packing(
-        self,
-        canvas_h: int,
-        canvas_w: int,
-        pieces_grid: Optional[List[Tuple[int, int]]] = None,
-
-        max_solutions: Optional[int] = 10,
-        allow_rotate: bool = True,
-    ) -> List[List[Dict]]:
+    # TODO: find all rectangle
+    def find_largest_filled_rectangle(self) -> Tuple[int,int,int,int]:
         """
-        在一个 H×W 的整数网格画布上，铺一组长方形块，返回所有可行铺法（不重叠、刚好铺满）。
+        在当前的 `self.current_layout` 中寻找最大的、完全被填充的矩形区域。
 
-        这里做了去重：
-        - 对于尺寸相同的 piece，只关心“格子上矩形尺寸的排布”是否不同。
-        - 也就是说，如果两个解只是交换了相同尺寸的 index，会被视为同一个 frame，只保留一个。
+        返回：(top, left, height, width), sublayout, pieces_in_rect_set, leftover_piece_indices
+        - sublayout 是矩形区域内的 (piece_idx, rot) 二维列表
+        - pieces_in_rect_set 是该矩形包含的 piece indices 的集合
+        - leftover_piece_indices 是未包含在该矩形中的 piece indices 列表
 
-        同时在 DFS 中加入一个基于“同高/同宽优先”的 heuristic：
-        - 在格子 (r,c) 放块时：
-            * 如果左边已有块，则优先尝试“高度 = 左边块高度”的 piece；
-            * 如果上边已有块，则优先尝试“宽度 = 上边块宽度”的 piece；
+        算法：把布局视为二值矩阵（1=已放置，0=空），对每一行维护柱状图高度，使用单调栈求解每行的最大矩形。
         """
+        rows = self.grid_rows
+        cols = self.grid_cols
+        # 二值矩阵：1 表示已放置
+        mat = [[1 if self.best_layout[r][c] is not None else 0 for c in range(cols)] for r in range(rows)]
 
+        heights = [0] * cols
+        max_area = 0
+        result_rect = (0, 0, 0, 0)
+        top_row, left_col, h_val, w_val = 0, 0, 0, 0
 
-        # 画布：-1 表示空，>=0 表示对应的 piece_index
-        canvas = [[-1] * canvas_w for _ in range(canvas_h)]
-        used = [False] * self.num_pieces
-        # 记录当前每个 piece 放置时的 (h, w)，用于生成解和 frame
-        current_orient: List[Optional[Tuple[int, int]]] = [None] * self.num_pieces
-        solutions: List[List[Dict]] = []
+        for r in range(rows):
+            for c in range(cols):
+                heights[c] = heights[c] + 1 if mat[r][c] == 1 else 0
 
-        # 用于“按 frame 去重”的集合
-        # 元素是：tuple(tuple(row), ...) 形式的 type_id 网格
-        seen_frames = set()
-
-        # ====== 预计算：按原始尺寸分组 ======
-        # pieces_grid: list of (h,w) in grid units for each original piece index
-        # If provided, use it; otherwise fall back to self.all_rots' shape (assumed to be grid units)
-        piece_shapes: List[Tuple[int, int]] = []
-        height_to_indices: Dict[int, List[int]] = {}
-        width_to_indices: Dict[int, List[int]] = {}
-        if pieces_grid is not None:
-            piece_shapes = pieces_grid
-            for idx, (ph, pw) in enumerate(pieces_grid):
-                height_to_indices.setdefault(ph, []).append(idx)
-                width_to_indices.setdefault(pw, []).append(idx)
-        else:
-            for idx, prot in enumerate(self.all_rots):
-                ph, pw = prot.shape
-                piece_shapes.append((ph, pw))
-                height_to_indices.setdefault(ph, []).append(idx)
-                width_to_indices.setdefault(pw, []).append(idx)
-
-        # 按相似度排序高度和宽度组
-        height_to_indices, width_to_indices = self._sort_groups_by_similarity(
-            height_to_indices, width_to_indices
-        )
-
-
-        def find_empty():
-            """找到第一个空格子 (r, c)，找不到则返回 (None, None)"""
-            for r in range(canvas_h):
-                for c in range(canvas_w):
-                    if canvas[r][c] == -1:
-                        return r, c
-            return None, None
-
-        def can_place(idx: int, r: int, c: int, h: int, w: int) -> bool:
-            """检查 piece idx 放在 (r,c) 顶点、高度 h、宽度 w 是否会出界或重叠"""
-            if r + h > canvas_h or c + w > canvas_w:
-                return False
-            for i in range(r, r + h):
-                row = canvas[i]
-                for j in range(c, c + w):
-                    if row[j] != -1:
-                        return False
-            return True
-
-        def place(idx: int, r: int, c: int, h: int, w: int, val: int):
-            """在 canvas 上填充/清空某个块"""
-            for i in range(r, r + h):
-                for j in range(c, c + w):
-                    canvas[i][j] = val
-
-        def build_frame_signature() -> Tuple[Tuple[int, ...], ...]:
-            """
-            基于当前 canvas + current_orient，构建“按尺寸的 frame 网格签名”。
-            """
-            shape_to_id: Dict[Tuple[int, int], int] = {}
-            next_id = 0
-
-            frame_grid = [[-1] * canvas_w for _ in range(canvas_h)]
-
-            for y in range(canvas_h):
-                for x in range(canvas_w):
-                    idx = canvas[y][x]
-                    if idx == -1:
-                        frame_grid[y][x] = -1
-                    else:
-                        h, w = current_orient[idx]
-                        key = (h, w)
-                        if key not in shape_to_id:
-                            shape_to_id[key] = next_id
-                            next_id += 1
-                        frame_grid[y][x] = shape_to_id[key]
-
-            return tuple(tuple(row) for row in frame_grid)
-
-        def dfs():
-            # 控制解的数量（按“不同 frame”来数）
-            if max_solutions is not None and len(solutions) >= max_solutions:
-                return
-
-            r, c = find_empty()
-            # 没有空格子了 → 找到一种完整拼法
-            if r is None:
-                sig = build_frame_signature()
-                if sig in seen_frames:
-                    return
-                seen_frames.add(sig)
-
-                sol: List[Dict] = []
-                for i in range(self.num_pieces):
-                    h, w = current_orient[i]
-                    # 找这个 piece 在 canvas 上的左上角
-                    tl = None
-                    for y in range(canvas_h):
-                        for x in range(canvas_w):
-                            if canvas[y][x] == i:
-                                tl = (y, x)
-                                break
-                        if tl is not None:
-                            break
-                    sol.append(
-                        {
-                            "piece_index": i,
-                            "top": tl[0],
-                            "left": tl[1],
-                            "height": h,
-                            "width": w,
-                        }
-                    )
-                solutions.append(sol)
-                return
-
-            # ========= 根据左/上邻居，生成“优先考虑的 piece 顺序” =========
-            left_h = left_w = None
-            top_h = top_w = None
-
-            # 左邻居
-            if c > 0 and canvas[r][c - 1] != -1:
-                idx_left = canvas[r][c - 1]
-                left_h, left_w = current_orient[idx_left]
-
-            # 上邻居
-            if r > 0 and canvas[r - 1][c] != -1:
-                idx_top = canvas[r - 1][c]
-                top_h, top_w = current_orient[idx_top]
-
-            ordered_indices: List[int] = []
-            seen_idx = set()
-
-            # 1) 优先：原始高度 = left_h 的块
-            if left_h is not None:
-                for idx in height_to_indices.get(left_h, []):
-                    
-                    if not used[idx] and idx not in seen_idx:
-                        # TODO when similarity is very small, prioritize
-                        ordered_indices.append(idx)
-                        seen_idx.add(idx)
-
-            # 2) 其次：原始宽度 = top_w 的块
-            if top_w is not None:
-                for idx in width_to_indices.get(top_w, []):
-                    if not used[idx] and idx not in seen_idx:
-                        ordered_indices.append(idx)
-                        seen_idx.add(idx)
-
-            # 3) 最后：其他所有未使用的块
-            for idx in range(self.num_pieces):
-                if not used[idx] and idx not in seen_idx:
-                    ordered_indices.append(idx)
-                    seen_idx.add(idx)
-
-            # 本格子“尺寸去重”：同样尺寸 (h,w) 在这个格子只尝试一次
-            seen_shapes_this_cell = set()
-
-            # 按 ordered_indices 的顺序 DFS
-            for idx in ordered_indices:
-                ph, pw = piece_shapes[idx]  # 从 piece_shapes 获取（网格单位）
-
-                # 决定这个 piece 的所有可选朝向
-                if allow_rotate and ph != pw:
-                    orientations = [(ph, pw), (pw, ph)]
+            # largest rectangle in histogram 'heights'
+            stack = []  # store indices
+            c = 0
+            while c <= cols:
+                h = heights[c] if c < cols else 0
+                if not stack or h >= heights[stack[-1]]:
+                    stack.append(c)
+                    c += 1
                 else:
-                    orientations = [(ph, pw)]
+                    top_idx = stack.pop()
+                    width = c if not stack else c - stack[-1] - 1
+                    area = heights[top_idx] * width
+                    if area > max_area:
+                        max_area = area
+                        h_val = heights[top_idx]
+                        w_val = width
+                        top_row = r - h_val + 1
+                        left_col = stack[-1] + 1 if stack else 0
+                        result_rect = (top_row, left_col, h_val, w_val)
+        print(f"[INFO] result_rect: {result_rect}, max_area: {max_area}")
+        sublayout = []
+        pieces_in_rect = set()
+        pRow = 0
+        pCol = 0
+        for rr in range(top_row, top_row + h_val):
+            row_list = []
+            pRow = 0
+            for cc in range(left_col, left_col + w_val):
+                cell = self.best_layout[rr][cc]
+                row_list.append(cell)
+                #TODO: rotate
+                pRow = self.all_rots[cell[0]].shape[1]
+                pCol += self.all_rots[cell[0]].shape[0]
+                if cell is not None:
+                    pieces_in_rect.add(cell[0])
+            sublayout.append(row_list)
+            
+            print(f"[DEBUG] pCol after row {rr}: {pCol}")
+        print(f"[INFO] Sublayout contents: {sublayout}")
+        print(f"[INFO] Sublayout contents: {self.best_layout}")
 
-                for h, w in orientations:
-                    if not can_place(idx, r, c, h, w):
-                        continue
-
-                    shape_key = (h, w)
-                    if shape_key in seen_shapes_this_cell:
-                        continue
-                    seen_shapes_this_cell.add(shape_key)
-
-                    # 放下去
-                    used[idx] = True
-                    current_orient[idx] = (h, w)
-                    place(idx, r, c, h, w, idx)
-
-                    # 递归
-                    dfs()
-
-                    # 回溯
-                    place(idx, r, c, h, w, -1)
-                    used[idx] = False
-                    current_orient[idx] = None
-
-        dfs()
-        return solutions
+       
+        
+        return (result_rect, sublayout, pieces_in_rect, (pRow, pCol))
     
+    def group_pieces(self):
+        # 构建 sublayout 和 pieces 集合
+        result_rect, sublayout, pieces_in_rect, (pRow, pCol) = self.find_largest_filled_rectangle()
+        top_row, left_col, h_val, w_val = result_rect
+
+        canvas = np.zeros((400, 400, 3), dtype=np.uint8)
+        # canvas = []
+
+        print(f"[INFO] Grouping pieces into one rectangle of size {h_val} x {w_val}...")
+        print(f"[INFO] Sublayout: {sublayout}")
+        for r in range(len(sublayout)):
+            for c in range(len(sublayout[0])):
+                print(f"[DEBUG] Placing piece: {sublayout[r][c]}")
+                piece_idx, rot_idx = sublayout[r][c]
+                piece_rot = self.all_rots[piece_idx]
+                img = rotate_piece(piece_rot.img, rot_idx)
+                print(f"[DEBUG] Placing piece shape: {img.shape}")
+                ph, pw = img.shape[:2]
+                print(f"[DEBUG] Piece shape: {ph} x {pw}")
+                y0 = r * ph
+                x0 = c * pw
+                # canvas = canvas.append(np.zeros((ph, pw, 3), dtype=np.uint8))
+                canvas[y0:y0+ph, x0:x0+pw, :] = img
+        canvas = crop_background(canvas, bg_color=(0,0,0), tol=0)
+
+        return (canvas, pieces_in_rect)
 
 
+    # def get_new_pieces():
+    #     # 1. Get groups of pieces from self.current_layout, make sure is a rectangle
+
+    #      if max_area > 0 and h_val > 0 and w_val > 0:
+
+
+    
     def solve_packing_2(self):
-        pass
-        # First, we have original pieces.
-        # Do find_same_HW, build_solution_same_HW until no more same H/W groups can be found.
-        # Then, do frame() for all remaining pieces if there is any.
-
-    def find_same_HW(self):
         # get a union set with same height or width
         # [H/W] -> set(piece index)
         # Every piece may be original w or h, need to be recorded in as well
         # make sure each piece only appear once
         # get one dict: [H/W] -> set(piece index)
 
-        height_to_indices: Dict[int, List[int]] = {}
-        width_to_indices: Dict[int, List[int]] = {}
+        while True:
+            if len(self.pieces) <= 1:
+                break
+            self.all_rots = self.build_all_rotations(self.pieces)
+            self.num_pieces = len(self.all_rots)
+            prev_num_pieces = self.num_pieces
+            self.find_same_HW()
+            self.build_solution_same_HW()
+            if self.num_pieces == prev_num_pieces:
+                break
+        return self.pieces[0]
+       
+        # First, we have original pieces.
+        # Do find_same_HW, build_solution_same_HW until no more same H/W groups can be found.
+        # Then, do frame() for all remaining pieces if there is any.
+
+    def find_same_HW(self):
+        # Build height_to_indices and width_to_indices
         for idx, prot in enumerate(self.all_rots):
             ph, pw = prot.shape
-            height_to_indices.setdefault(ph, []).append(idx)
-            width_to_indices.setdefault(pw, []).append(idx)
-        # combine two dicts into one
-        same_HW_dict: Dict[int, List[int]] = {}
-        for h, indices in height_to_indices.items():
-            if len(indices) >= 2:
-                same_HW_dict[h] = indices
-        for w, indices in width_to_indices.items():
-            if w in same_HW_dict and len(indices) >= 2:
-                same_HW_dict[w].append(indices)
-            elif len(indices) >= 2:
-                same_HW_dict[w] = indices
+            self.height_to_indices.setdefault(ph, []).append(idx)
+            self.width_to_indices.setdefault(pw, []).append(idx)
+        # combine two dicts into one 
+        # same_HW_dict: Dict[int, List[int]] = {}
+        # for h, indices in height_to_indices.items():
+        #     if len(indices) >= 2:
+        #         same_HW_dict[h] = indices
+        # for w, indices in width_to_indices.items():
+        #     if w in same_HW_dict and len(indices) >= 2:
+        #         same_HW_dict[w].append(indices)
+        #     elif len(indices) >= 2:
+        #         same_HW_dict[w] = indices
             
-        return same_HW_dict
+        
+    
+    def initialize_DFS_variables(self, sameH_lists):
+        # TODO: change back
+        self.grid_rows = 4
+        self.grid_cols = 4
+        print(f"[INFO] Initialized DFS grid size: {self.grid_rows} x {self.grid_cols}")
+        self.positions = [(r, c) for r in range(self.grid_rows) for c in range(self.grid_cols)]
+
+        self.best_cost = float("inf")
+        self.best_layout = None  # 2D: (piece_idx, rot_idx)
+
+        # 当前状态
+        self.current_layout = [[None for _ in range(self.grid_cols)] for _ in range(self.grid_rows)]
+        self.used_piece = [False] * self.num_pieces
+        self.current_cost = 0.0
+
+        self.solutions_found = 0
     
     def build_solution_same_HW(self):
-        pass
+        
+         # 1. For every same H/W group, do DFS search
+        #   a. check the index is not used
+        #   b. >= 2
+        # 2. Each time a solution is found, 
+        #   a. record the best solution found as one big piece 
+        #   b. record used pieces in the set
+        #   c. put these pieces back to new pieces
+        # 3. Finally, get a new pieces list with all pieces grouped + original pieces that cannot be grouped.
+        # 4. Recalculate all_rots with new pieces list
+       
+
+        
+        pieces = []
+        
+
+        all_lists = [self.height_to_indices, self.width_to_indices]
+        for lst in all_lists:
+            for HW, same_lists in lst.items():
+                # delete used from sameH_lists
+                same_lists = [idx for idx in same_lists if idx not in self.used_index]
+                print(f"[INFO] Processing H/W={HW} group with pieces: {same_lists}")
+
+                if len(same_lists) == 0:
+                    continue
+                if len(same_lists) == 1:
+                    pieces.append(self.all_rots[same_lists[0]].img)
+                    continue
+               
+                
+
+                # Update variables
+                self.initialize_DFS_variables(same_lists)
+                self._get_score()
+                self._build_candidates(top_k=6)
+                self._dfs(0, len(same_lists))
+                print(f"[INFO] Best cost for H/W={HW} group: {self.best_cost:.4f}")
+                print(f"[INFO] Best layout for H/W={HW} group: {self.best_layout}")
+                img, pieces_in_rect = self.group_pieces()
+
+                self.used_index.update(pieces_in_rect)
+                pieces.append(img)
+        for idx in range(self.num_pieces):
+            if idx not in self.used_index:
+                pieces.append(self.all_rots[idx].img)
+                
+        self.pieces = pieces
+        self.num_pieces = len(self.pieces)
+        
+
+        
+
         # For every same map key, we do one of DFS search that is similar to regular one
 
         # Input: one dict containing [H/W] -> set(piece index)
@@ -504,13 +408,29 @@ class PuzzleSolver:
     # Repeat find_same_HW and build_solution_same_HW until the total N of the returned new pieces list is the same
     # return a new pieces list with all pieces that cannot be grouped.
     
-    def frame():
+    def frame(self):
         # For all pieces that cannot be grouped, do the regular frame solver.
         # Each time a possible frame is found, we need to check the score.
         # If score < threshold, we keep it as a possible solution.
         # Finally, return best frame found.
+        pass
 
 
+
+    def build_all_rotations(self,pieces):
+        """
+        对每个 piece 生成 4 个旋转版本，并计算每个版本的 edge 描述子。
+        返回：
+            all_rots: (piece_idx, rot_idx) -> PieceRot
+        """
+        all_rots = []
+        for i, p in enumerate(pieces):
+            # for rot in range(4):
+            #     img_rot = rotate_piece(p, rot)
+            edges = compute_piece_edge_descriptors(p)
+            all_rots.append(PieceRot(piece_idx=i, img=p, edges=edges, shape=p.shape[:2]))
+        print(f"[INFO] Built {len(all_rots)} rotated versions.")
+        return all_rots
 
 
 

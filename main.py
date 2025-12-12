@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import math
-from collections import namedtuple
+
 import sys
 import os
 from Puzzle import Puzzle
@@ -11,7 +11,7 @@ from typing import List, Tuple, Dict, Optional
 from functools import reduce
 
 from compute_similarity import compute_piece_edge_descriptors
-# from puzzleSolver import PuzzleSolver
+from puzzleSolver import PuzzleSolver
 
 # ---- 配置参数 ----
 EDGE_STRIP_WIDTH = 10        # 用于提取边缘条带的宽度 (像素)
@@ -21,8 +21,7 @@ ALPHA = 0.5                 # 颜色差权重
 BETAB = 0.5                 # 梯度差权重
 MIN_COMPONENT_AREA = 10    # 过滤太小的噪声连通域
 
-# Store info of a piece in a specific rotation
-PieceRot = namedtuple("PieceRot", ["piece_idx", "img", "edges", "shape"])
+
 
 def load_image(path):
     img = cv2.imread(path)
@@ -116,20 +115,20 @@ def rectify_piece(piece_img, smooth=True):
 
 # ---------- 构建所有旋转版本 ----------
 
-def build_all_rotations(pieces):
-    """
-    对每个 piece 生成 4 个旋转版本，并计算每个版本的 edge 描述子。
-    返回：
-        all_rots: (piece_idx, rot_idx) -> PieceRot
-    """
-    all_rots = []
-    for i, p in enumerate(pieces):
-        # for rot in range(4):
-        #     img_rot = rotate_piece(p, rot)
-        edges = compute_piece_edge_descriptors(p)
-        all_rots.append(PieceRot(piece_idx=i, img=p, edges=edges, shape=p.shape[:2]))
-    print(f"[INFO] Built {len(all_rots)} rotated versions.")
-    return all_rots
+# def build_all_rotations(pieces):
+#     """
+#     对每个 piece 生成 4 个旋转版本，并计算每个版本的 edge 描述子。
+#     返回：
+#         all_rots: (piece_idx, rot_idx) -> PieceRot
+#     """
+#     all_rots = []
+#     for i, p in enumerate(pieces):
+#         # for rot in range(4):
+#         #     img_rot = rotate_piece(p, rot)
+#         edges = compute_piece_edge_descriptors(p)
+#         all_rots.append(PieceRot(piece_idx=i, img=p, edges=edges, shape=p.shape[:2]))
+#     print(f"[INFO] Built {len(all_rots)} rotated versions.")
+#     return all_rots
 
 
 
@@ -250,12 +249,6 @@ def render_layout(best_layout, all_rots, piece_size):
     return canvas
 
 
-def rotate_piece(img, rot_idx):
-    """
-    rot_idx = 0,1,2,3 分别对应 0°,270°,180°,90°
-    顺时针旋转
-    """
-    return np.rot90(img, rot_idx, axes=(0, 1))
 
 def render_animation_sequence(best_layout, all_rots, piece_size, bg_color=(0, 0, 0)):
     """
@@ -299,72 +292,96 @@ def main(input_path, output_image_path, output_anim_dir=None):
     if len(pieces) == 0:
         print("[ERROR] No pieces detected.")
         return
+    piece_size = pieces[0].shape[:2]  # 假设所有 piece 大小相同
+    # rectified_pieces = [rectify_piece(p) for p in pieces]
+    num_pieces = len(pieces)
+    side = int(round(math.sqrt(num_pieces)))
+    
+    # 4, 4 in this case
+    grid_rows = side
+    grid_cols = side
+
+    # all_rots = build_all_rotations(pieces)
+
+    solver = PuzzleSolver(pieces, grid_rows, grid_cols)
+    # best_layout, best_cost = solver.solve()
+    img = solver.solve_packing_2()
+
+    # if best_layout is None:
+    #     print("[ERROR] No layout found.")
+    #     return
+
+    # print(f"[INFO] Best layout cost: {best_cost:.4f}")
+
+    # solved_image = render_layout(best_layout, all_rots, piece_size)
+    # canvas_size = 400
+    # solved_image = render_layout_pixel(best_layout, all_rots, canvas_size)
+    cv2.imwrite(output_image_path, img)
+    print(f"[INFO] Saved solved puzzle image to {output_image_path}")
+
+    # if output_anim_dir is not None:
+    #     os.makedirs(output_anim_dir, exist_ok=True)
+    #     frames = render_animation_sequence(best_layout, all_rots, piece_size)
+    #     for i, frame in enumerate(frames):
+    #         frame_path = os.path.join(output_anim_dir, f"frame_{i:03d}.png")
+    #         cv2.imwrite(frame_path, frame)
+    #     print(f"[INFO] Saved {len(frames)} animation frames to {output_anim_dir}")
+
+
+    # if len(pieces) == 0:
+    #     print("[ERROR] No pieces detected.")
+    #     return
     
     
-    # 2. 只取像素尺寸 (h, w)
-    piece_sizes_px = [(p.shape[0], p.shape[1]) for p in pieces]
-    print("[INFO] piece_sizes_px =", piece_sizes_px)
+    # # 2. 只取像素尺寸 (h, w)
+    # piece_sizes_px = [(p.shape[0], p.shape[1]) for p in pieces]
+    # print("[INFO] piece_sizes_px =", piece_sizes_px)
 
-    hs = [h for h, w in piece_sizes_px]
-    ws = [w for h, w in piece_sizes_px]
+    # hs = [h for h, w in piece_sizes_px]
+    # ws = [w for h, w in piece_sizes_px]
 
-    # 用 gcd 把像素转成“格子单位”
-    gcd_h = _gcd_list(hs)
-    gcd_w = _gcd_list(ws)
+    # # 用 gcd 把像素转成“格子单位”
+    # gcd_h = _gcd_list(hs)
+    # gcd_w = _gcd_list(ws)
 
-    canvas_h_pixels, canvas_w_pixels = 400, 400
+    # canvas_h_pixels, canvas_w_pixels = 400, 400
 
-    # 确保画布像素维度能被 gcd 整除，否则退化到 cell=1 像素
-    if canvas_h_pixels % gcd_h != 0:
-        print(f"[WARN] canvas_h_pixels {canvas_h_pixels} 不能被 gcd_h {gcd_h} 整除，使用 cell_h=1")
-        gcd_h = 1
-    if canvas_w_pixels % gcd_w != 0:
-        print(f"[WARN] canvas_w_pixels {canvas_w_pixels} 不能被 gcd_w {gcd_w} 整除，使用 cell_w=1")
-        gcd_w = 1
+    # # 确保画布像素维度能被 gcd 整除，否则退化到 cell=1 像素
+    # if canvas_h_pixels % gcd_h != 0:
+    #     print(f"[WARN] canvas_h_pixels {canvas_h_pixels} 不能被 gcd_h {gcd_h} 整除，使用 cell_h=1")
+    #     gcd_h = 1
+    # if canvas_w_pixels % gcd_w != 0:
+    #     print(f"[WARN] canvas_w_pixels {canvas_w_pixels} 不能被 gcd_w {gcd_w} 整除，使用 cell_w=1")
+    #     gcd_w = 1
 
-    canvas_h = canvas_h_pixels // gcd_h
-    canvas_w = canvas_w_pixels // gcd_w
-    piece_sizes_grid = [(h // gcd_h, w // gcd_w) for (h, w) in piece_sizes_px]
+    # canvas_h = canvas_h_pixels // gcd_h
+    # canvas_w = canvas_w_pixels // gcd_w
+    # piece_sizes_grid = [(h // gcd_h, w // gcd_w) for (h, w) in piece_sizes_px]
 
-    print(f"[INFO] cell size = ({gcd_h}, {gcd_w}) pixels")
-    print(f"[INFO] canvas grid size = ({canvas_h}, {canvas_w})")
-    print(f"[INFO] piece sizes in grid = {piece_sizes_grid}")
+    # print(f"[INFO] cell size = ({gcd_h}, {gcd_w}) pixels")
+    # print(f"[INFO] canvas grid size = ({canvas_h}, {canvas_w})")
+    # print(f"[INFO] piece sizes in grid = {piece_sizes_grid}")
     
-    total_piece_area_grid = sum(h * w for h, w in piece_sizes_grid)
-    canvas_area_grid = canvas_h * canvas_w
-    print(f"[INFO] total_piece_area_grid = {total_piece_area_grid}, "
-          f"canvas_area_grid = {canvas_area_grid}")
+    # total_piece_area_grid = sum(h * w for h, w in piece_sizes_grid)
+    # canvas_area_grid = canvas_h * canvas_w
+    # print(f"[INFO] total_piece_area_grid = {total_piece_area_grid}, "
+    #       f"canvas_area_grid = {canvas_area_grid}")
     
-     # 3. solve_packing 纯几何拼板（只看 frame）
-    print("[INFO] Running solve_packing (frame only)...")
+    #  # 3. solve_packing 纯几何拼板（只看 frame）
+    # print("[INFO] Running solve_packing (frame only)...")
 
 
     
-
-    # num_pieces = len(rectified_pieces)
+    # num_pieces = len(pieces)
     # side = int(round(math.sqrt(num_pieces)))
     
     # grid_rows = side
     # grid_cols = side
 
-    # all_rots = build_all_rotations(rectified_pieces)
+    # all_rots = build_all_rotations(pieces)
 
     # solver = PuzzleSolver(all_rots, grid_rows, grid_cols)
-    # best_layout, best_cost = solver.solve()
-
-    # if best_layout is None:
-    #     print("[ERROR] No layout found.")
-    #     return
-    num_pieces = len(pieces)
-    side = int(round(math.sqrt(num_pieces)))
-    
-    grid_rows = side
-    grid_cols = side
-
-    all_rots = build_all_rotations(pieces)
-
-    # solver = PuzzleSolver(all_rots, grid_rows, grid_cols)
-    # solutions = solver.irr_solve(canvas_h, canvas_w, piece_sizes_grid)
+    # solutions = solver.solve()
     # print(f"[INFO] Found {len(solutions)} geometric layout(s).")
 
     # for i, sol in enumerate(solutions):
@@ -395,19 +412,19 @@ def main(input_path, output_image_path, output_anim_dir=None):
 
     # 对每个 (r, c) 都跑一次 PuzzleSolver 选 cost 最小的那个
 
-    piece_size = pieces[0].shape[:2]  # 假设所有 piece 大小相同
-    rectified_pieces = [rectify_piece(p) for p in pieces]
+    # piece_size = pieces[0].shape[:2]  # 假设所有 piece 大小相同
+    # rectified_pieces = [rectify_piece(p) for p in pieces]
     
-    # Use pixel-based solver with canvas size 400x400
-    canvas_size = 400
-    solver = Puzzle(all_rots, canvas_size)
-    best_solution, best_cost = solver.solve()
-    print(f"[INFO] Best layout cost: {best_cost:.4f}")
+    # # Use pixel-based solver with canvas size 400x400
+    # canvas_size = 400
+    # solver = Puzzle(all_rots, canvas_size)
+    # best_solution, best_cost = solver.solve()
+    # print(f"[INFO] Best layout cost: {best_cost:.4f}")
 
-    # Render using pixel-based layout
-    solved_image = render_layout_pixel(best_solution, all_rots, canvas_size)
-    cv2.imwrite(output_image_path, solved_image)
-    print(f"[INFO] Saved solved puzzle image to {output_image_path}")
+    # # Render using pixel-based layout
+    # solved_image = render_layout_pixel(best_solution, all_rots, canvas_size)
+    # cv2.imwrite(output_image_path, solved_image)
+    # print(f"[INFO] Saved solved puzzle image to {output_image_path}")
 
     # TODO: Animation rendering for pixel-based format
     # if output_anim_dir is not None:
