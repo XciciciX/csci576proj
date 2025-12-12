@@ -83,7 +83,8 @@ def rectify_piece(piece_img, smooth=True):
     angle = rect[2]
     if (abs(short_len - h0) < 2 and abs(long_len - w0) < 2 and (abs(angle) < 1 or abs(abs(angle)-90)<1)) \
         or (abs(short_len - w0) < 2 and abs(long_len - h0) < 2 and (abs(angle) < 1 or abs(abs(angle)-90)<1)):
-        return piece_img
+        # 没有旋转/透视，is_rotated=False
+        return piece_img, False
 
     # 重新排列src点，使长边映射到目标长边，短边映射到目标短边
     start_idx = max_idx
@@ -103,7 +104,7 @@ def rectify_piece(piece_img, smooth=True):
     try:
         M = cv2.getPerspectiveTransform(src_pts, dst_pts)
     except cv2.error:
-        return piece_img
+        return piece_img, False
 
     big = cv2.resize(piece_img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
     M_scaled = M.copy()
@@ -121,7 +122,20 @@ def rectify_piece(piece_img, smooth=True):
         blur = cv2.GaussianBlur(rectified, (3, 3), sigmaX=1.0)
         rectified = cv2.addWeighted(rectified, 1.2, blur, -0.2, 0)
 
-    return rectified
+    # 保持shape不变，将内容放大一点点，舍弃边缘
+    if rectified is not None:
+        h, w = rectified.shape[:2]
+        scale = 1.05  # 放大4%，可调整
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        # 先放大
+        enlarged = cv2.resize(rectified, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        # 再中心裁剪回原shape
+        start_x = (new_w - w) // 2
+        start_y = (new_h - h) // 2
+        rectified = enlarged[start_y:start_y + h, start_x:start_x + w]
+    # 经过透视变换，is_rotated=True
+    return rectified, True
 
 
 def save_rectified_pieces(pieces, rectified_pieces, out_dir="debug_rectified"):
@@ -148,7 +162,11 @@ def main(input_path, output_image_path, output_anim_dir=None):
         print("[ERROR] No pieces detected.")
         return
     
-    rectified_pieces = [rectify_piece(p) for p in pieces]
+
+    # 获取rectified和is_rotated
+    rectified_results = [rectify_piece(p) for p in pieces]
+    rectified_pieces = [r[0] for r in rectified_results]
+    is_rotated = any(r[1] for r in rectified_results)
     save_rectified_pieces(pieces, rectified_pieces, out_dir="debug_rectified")
 
     num_pieces = len(pieces)
@@ -158,7 +176,7 @@ def main(input_path, output_image_path, output_anim_dir=None):
     grid_rows = side
     grid_cols = side
 
-    solver = PuzzleSolver(rectified_pieces, grid_rows, grid_cols)
+    solver = PuzzleSolver(rectified_pieces, grid_rows, grid_cols, is_rotated)
     # best_layout, best_cost = solver.solve()
     img = solver.solve_packing_2()
     cv2.imwrite(output_image_path, img)

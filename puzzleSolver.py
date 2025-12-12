@@ -9,14 +9,15 @@ from solver import Solver
 import cv2
 
 class PuzzleSolver:
-    def __init__(self, pieces, grid_rows, grid_cols):
+    def __init__(self, pieces, grid_rows, grid_cols, is_rotated=False):
         
         self.pieces = pieces               # dict[(piece_idx, rot_idx)] -> PieceRot
         self.num_pieces = len(pieces)
     
-        # DFS Usage
+        
         self.grid_rows = grid_rows
         self.grid_cols = grid_cols
+        self.is_rotated = is_rotated
         # self.positions = [(r, c) for r in range(self.grid_rows) for c in range(self.grid_cols)]
 
         self.best_cost = float("inf")
@@ -238,7 +239,7 @@ class PuzzleSolver:
                         new_to_old.append(idx)
                 self.new_to_old = new_to_old
 
-                all_rots = build_all_rotations(crt_pieces)
+                all_rots = build_all_rotations(crt_pieces, self.is_rotated)
     
                 solver = Solver(all_rots, self.grid_rows, self.grid_cols)
                 self.best_layout, best_cost = solver.solve(len(same_lists)) # the number of grid_rows * grid_cols should be larger than N

@@ -38,7 +38,7 @@ def crop_background(img: np.ndarray, bg_color=(0, 0, 0), tol: int = 0) -> np.nda
     x0, x1 = xs.min(), xs.max() + 1
     return img[y0:y1, x0:x1].copy()
 
-def build_all_rotations(pieces):
+def build_all_rotations(pieces, is_rotated=False):
     """
     对每个 piece 生成 4 个旋转版本，并计算每个版本的 edge 描述子。
     返回：
@@ -46,9 +46,9 @@ def build_all_rotations(pieces):
     """
     all_rots = []
     for i, p in enumerate(pieces):
-        # for rot in range(4):
-        #     img_rot = rotate_piece(p, rot)
-        edges = compute_piece_edge_descriptors(p)
+        
+        extra = 2 if is_rotated else 0
+        edges = compute_piece_edge_descriptors(p, extra_strip=extra)
         all_rots.append(PieceRot(piece_idx=i, img=p, edges=edges, shape=p.shape[:2]))
     print(f"[INFO] Built {len(all_rots)} rotated versions.")
     return all_rots

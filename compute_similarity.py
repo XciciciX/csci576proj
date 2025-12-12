@@ -45,7 +45,7 @@ def compute_grad_hist(gray_strip, mag_strip, ang_strip, bins=GRAD_BINS):
     return hist
 
 
-def compute_piece_edge_descriptors(piece_img, edge_strip_width=EDGE_STRIP_WIDTH):
+def compute_piece_edge_descriptors(piece_img, edge_strip_width=EDGE_STRIP_WIDTH, extra_strip=0):
     """
     对一个 piece（已经是某个固定旋转）的四条边，计算：
     - 颜色直方图
@@ -54,7 +54,7 @@ def compute_piece_edge_descriptors(piece_img, edge_strip_width=EDGE_STRIP_WIDTH)
     其中 desc = {"color": color_vec, "grad": grad_vec}
     """
     h, w, _ = piece_img.shape
-    k = min(edge_strip_width, h // 3, w // 3)  # 防止太大
+    k = min(edge_strip_width + extra_strip, h // 3, w // 3)  # 防止太大
 
     # 获取边缘 strip
     top_strip = piece_img[0:k, :, :]
