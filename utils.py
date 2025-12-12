@@ -113,27 +113,32 @@ def split_image_bisect_until_max(
             out.append(cur)
             return
 
-        # 沿着更长的维度切
+        # 沿着更长的维度切，切分点尽量均匀
         if h >= w:
-            cut = h // 2
-            y0 = max(0, cut - overlap)
-            y1 = min(h, cut + overlap)
-
-            top = cur[:y1, ...]          # [0, y1)
-            bot = cur[y0:, ...]          # [y0, h)
-
-            rec(top, oy + 0,   ox + 0)
-            rec(bot, oy + y0,  ox + 0)
+            # 让每块都不超过max_size，且尽量均匀
+            if h > max_size:
+                n = int(np.ceil(h / max_size))
+                sizes = [h // n] * n
+                for i in range(h % n):
+                    sizes[i] += 1
+                y = 0
+                for size in sizes:
+                    rec(cur[y:y+size, ...], oy + y, ox)
+                    y += size
+            else:
+                out.append(cur)
         else:
-            cut = w // 2
-            x0 = max(0, cut - overlap)
-            x1 = min(w, cut + overlap)
-
-            left = cur[:, :x1, ...]      # [0, x1)
-            right = cur[:, x0:, ...]     # [x0, w)
-
-            rec(left,  oy + 0,  ox + 0)
-            rec(right, oy + 0,  ox + x0)
+            if w > max_size:
+                n = int(np.ceil(w / max_size))
+                sizes = [w // n] * n
+                for i in range(w % n):
+                    sizes[i] += 1
+                x = 0
+                for size in sizes:
+                    rec(cur[:, x:x+size, ...], oy, ox + x)
+                    x += size
+            else:
+                out.append(cur)
 
     rec(img, 0, 0)
     return out

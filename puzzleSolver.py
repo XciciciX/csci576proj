@@ -1,4 +1,5 @@
 
+
 import numpy as np
 
 from typing import List, Tuple, Dict, Optional
@@ -73,15 +74,114 @@ class PuzzleSolver:
             ph, pw = prot.shape[:2]
             self.height_to_indices.setdefault(ph, []).append(idx)
             self.width_to_indices.setdefault(pw, []).append(idx)
+
+        # Merge height and weight dicts, make sure indices are not duplicated
+        # 1) 合并 height_to_indices 和 width_to_indices
+        for h, indices in self.height_to_indices.items():
+            if h in self.width_to_indices:
+                # merge and deduplicate
+                merged = list(set(self.width_to_indices[h]) | set(indices))
+                self.width_to_indices[h] = merged
+            else:
+                self.width_to_indices[h] = list(set(indices))
+
+        # 合并只差1的组并裁剪pieces（放在排序前）
+        merged = self.merge_and_crop_groups(self.width_to_indices, tol=1)
+        self.width_to_indices = merged
+
         # 2) 按 value(list) 的长度降序排序（越多越靠前）
-        sorted_heights = sorted(self.height_to_indices.items(), key=lambda kv: len(kv[1]), reverse=True)
+        # sorted_heights = sorted(self.height_to_indices.items(), key=lambda kv: len(kv[1]), reverse=True)
         sorted_widths  = sorted(self.width_to_indices.items(),  key=lambda kv: len(kv[1]), reverse=True)
 
         # 3) 如果你想把它们变回 dict（保持这个顺序，Python 3.7+ dict 保序）
-        self.height_to_indices = dict(sorted_heights)
+        # self.height_to_indices = dict(sorted_heights)
         self.width_to_indices  = dict(sorted_widths)
-        print(self.height_to_indices)
         print(self.width_to_indices)
+
+    
+    def merge_and_crop_groups(self, groups: dict, tol: int = 1):
+        """
+        合并key只差tol的组，并将组内所有图片裁剪为组内最小尺寸。
+        groups: dict[key, List[idx]]
+        images: List[np.ndarray]
+        返回: new_groups, new_images
+        """
+        # 1. 合并key只差tol的组
+        keys = sorted(groups.keys())
+        merged = {}
+        used = set()
+        # 第一步：先合并395-400为一个组
+        merge_keys = [k for k in keys if 395 <= k <= 400]
+        # 判断分组是按宽度还是高度：如果所有组内图片的宽度都等于key，则按宽度分组，否则按高度分组
+        axis = 1  # 默认按宽度
+        if merge_keys:
+            # 检查第一个key的所有图片shape
+            sample_idx = groups[merge_keys[0]][0]
+            sample_shape = self.pieces[sample_idx].shape
+            if all(self.pieces[idx].shape[0] == k for k in merge_keys for idx in groups[k]):
+                axis = 0  # 按高度分组
+            merged_group = []
+            if axis == 1:
+                min_dim = min(self.pieces[idx].shape[1] for k in merge_keys for idx in groups[k])
+            else:
+                min_dim = min(self.pieces[idx].shape[0] for k in merge_keys for idx in groups[k])
+            for k in merge_keys:
+                for idx in groups[k]:
+                    img = self.pieces[idx]
+                    h, w = img.shape[:2]
+                    if axis == 1:
+                        if w > min_dim:
+                            self.pieces[idx] = img[:h, :min_dim].copy()
+                        else:
+                            self.pieces[idx] = img
+                    else:
+                        if h > min_dim:
+                            self.pieces[idx] = img[:min_dim, :w].copy()
+                        else:
+                            self.pieces[idx] = img
+                    merged_group.append(idx)
+                used.add(k)
+            merged[min(merge_keys)] = sorted(list(set(merged_group)))
+
+        # 第二步：对剩余key做只差tol的合并
+        for i, k in enumerate(keys):
+            if k in used:
+                continue
+            group = set(groups[k])
+            merged_group = [*group]
+            for j in range(i+1, len(keys)):
+                k2 = keys[j]
+                if k2 in used:
+                    continue
+                if abs(k2 - k) == tol:
+                    group2 = set(groups[k2])
+                    merged_group += list(group2)
+                    used.add(k2)
+                    # 判断分组是按宽度还是高度
+                    axis = 1
+                    if all(self.pieces[idx].shape[0] == k or self.pieces[idx].shape[1] == k for idx in list(group) + list(group2)):
+                        # 如果所有图片的高度等于key，则按高度分组
+                        if all(self.pieces[idx].shape[0] == k for idx in list(group) + list(group2)):
+                            axis = 0
+                    if axis == 1:
+                        min_dim = min(self.pieces[idx].shape[1] for idx in list(group) + list(group2))
+                    else:
+                        min_dim = min(self.pieces[idx].shape[0] for idx in list(group) + list(group2))
+                    for idx in list(group) + list(group2):
+                        img = self.pieces[idx]
+                        h, w = img.shape[:2]
+                        if axis == 1:
+                            if w > min_dim:
+                                self.pieces[idx] = img[:h, :min_dim].copy()
+                            else:
+                                self.pieces[idx] = img
+                        else:
+                            if h > min_dim:
+                                self.pieces[idx] = img[:min_dim, :w].copy()
+                            else:
+                                self.pieces[idx] = img
+            merged[k] = sorted(list(set(merged_group)))
+        return merged
 
 
     def build_solution_same_HW(self):
@@ -101,7 +201,8 @@ class PuzzleSolver:
         self.used_index = set()
         
         #TODO
-        all_lists = [self.height_to_indices, self.width_to_indices]
+        # all_lists = [self.height_to_indices, self.width_to_indices]
+        all_lists = [self.width_to_indices]
         print(all_lists)
         for lst in all_lists:
             for HW, same_lists in lst.items():
@@ -151,7 +252,9 @@ class PuzzleSolver:
 
 
                 pieces = split_image_bisect_until_max(img, 400, 0)
+                print(f"[DEBUG] split_image_bisect_until_max: {[p.shape for p in pieces]}")
                 final_pieces.extend(pieces)
+                
                 # print(len(pieces), [p.shape[:2] for p in pieces])
 
 
@@ -185,6 +288,7 @@ class PuzzleSolver:
             for c in range(len(sublayout[r])):
                 piece_idx, rot_idx = sublayout[r][c]
                 img = rotate_piece(self.pieces[piece_idx], rot_idx)
+                print(f"[DEBUG] group_pieces: piece_idx={piece_idx}, rot_idx={rot_idx}, img.shape={img.shape}")
                 ph, pw = img.shape[:2]
                 cell_hw[r][c] = (ph, pw)
 
@@ -229,40 +333,6 @@ class PuzzleSolver:
         canvas = crop_background(canvas, bg_color=(0, 0, 0), tol=0)
         return canvas, pieces_in_rect
         
-
-
-    # def group_pieces(self):
-    #     # 构建 sublayout 和 pieces 集合
-    #     result_rect, sublayout, pieces_in_rect, (pRow, pCol) = self.find_largest_filled_rectangle()
-    #     top_row, left_col, h_val, w_val = result_rect
-
-    #     canvas = np.zeros((500, 500, 3), dtype=np.uint8)
-    #     # canvas = []
-
-    #     print(f"[INFO] Grouping pieces into one rectangle of size {h_val} x {w_val}...")
-    #     print(f"[INFO] Sublayout: {sublayout}")
-    #     x0_prev = 0
-    #     for r in range(len(sublayout)):
-    #         y0_prev = 0
-    #         for c in range(len(sublayout[0])):
-    #             print(f"[DEBUG] Placing piece: {sublayout[r][c]}")
-    #             piece_idx, rot_idx = sublayout[r][c]
-    #             piece = self.pieces[piece_idx]
-    #             img = rotate_piece(piece, rot_idx)
-    #             print(f"[DEBUG] Placing piece shape: {img.shape}")
-    #             # if rotate, shape will rotate as well
-    #             ph, pw = img.shape[:2]
-    #             print(f"[DEBUG] Piece shape: {ph} x {pw}")
-
-                
-    #             # canvas = canvas.append(np.zeros((ph, pw, 3), dtype=np.uint8))
-    #             canvas[x0_prev:x0_prev+ph, y0_prev:y0_prev+pw, :] = img
-    #             x0_prev = x0_prev+ph
-    #             y0_prev = y0_prev+pw
-    #             print(f"[DEBUG]: CRT {y0_prev}, {x0_prev}")
-    #     canvas = crop_background(canvas, bg_color=(0,0,0), tol=0)
-
-    #     return (canvas, pieces_in_rect)
 
 
     # TODO: find all rectangle
@@ -340,38 +410,21 @@ class PuzzleSolver:
     
         
     
-    # def initialize_DFS_variables(self, sameH_lists):
-    #     # TODO: change back
-    #     self.grid_rows = 
-    #     self.grid_cols = 0
-    #     print(f"[INFO] Initialized DFS grid size: {self.grid_rows} x {self.grid_cols}")
-    #     self.positions = [(r, c) for r in range(self.grid_rows) for c in range(self.grid_cols)]
-
-    #     self.best_cost = float("inf")
-    #     self.best_layout = None  # 2D: (piece_idx, rot_idx)
-
-    #     # 当前状态
-    #     self.current_layout = [[None for _ in range(self.grid_cols)] for _ in range(self.grid_rows)]
-    #     self.used_piece = [False] * self.num_pieces
-    #     self.current_cost = 0.0
-
-    #     self.solutions_found = 0
-    
     
 
-        # For every same map key, we do one of DFS search that is similar to regular one
+    # For every same map key, we do one of DFS search that is similar to regular one
 
-        # Input: one dict containing [H/W] -> set(piece index)
-        # Search all possible solutions.
-        # DFS: randomly pick one to start, try fill right all first, then down.
-        # 1. (4 edges into consideration) Sim < 0.8
-        # 2. The image size cannot be exceeded
-        # 3. We can calculate all similarity with same size first
+    # Input: one dict containing [H/W] -> set(piece index)
+    # Search all possible solutions.
+    # DFS: randomly pick one to start, try fill right all first, then down.
+    # 1. (4 edges into consideration) Sim < 0.8
+    # 2. The image size cannot be exceeded
+    # 3. We can calculate all similarity with same size first
 
-        # Then, we need to record the best solution found, see them as a big piece. If it is not a sqare,
-        # cut it into squares.
+    # Then, we need to record the best solution found, see them as a big piece. If it is not a sqare,
+    # cut it into squares.
 
-        # Create a new pieces list, with the best solution found as one piece, and other pieces that are not used.
+    # Create a new pieces list, with the best solution found as one piece, and other pieces that are not used.
     
     
     # Repeat find_same_HW and build_solution_same_HW until the total N of the returned new pieces list is the same
