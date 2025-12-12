@@ -125,7 +125,7 @@ def rectify_piece(piece_img, smooth=True):
     # 保持shape不变，将内容放大一点点，舍弃边缘
     if rectified is not None:
         h, w = rectified.shape[:2]
-        scale = 1.05  # 放大4%，可调整
+        scale = 1.02  # 放大4%，可调整
         new_w = int(w * scale)
         new_h = int(h * scale)
         # 先放大

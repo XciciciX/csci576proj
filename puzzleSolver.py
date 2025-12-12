@@ -23,7 +23,7 @@ class PuzzleSolver:
 
         self.best_cost = float("inf")
         self.best_layout = None  # 2D: (piece_idx, rot_idx)
-
+        self.all_rots = []
 
         # Grouping
         self.height_to_indices: Dict[int, List[int]] = {}
@@ -251,25 +251,26 @@ class PuzzleSolver:
                 all_rots = build_all_rotations(crt_pieces, self.is_rotated)
 
                 # 获取top-k解
-                k = 1  # 你可以根据需要调整k
+                k = 2  # 你可以根据需要调整k
                 solver = Solver(all_rots, self.grid_rows, self.grid_cols, top_k_solutions=k)
                 top_k_results = solver.solve(len(same_lists))  # List[(cost, layout)]
-                # 记录top-k解
-                self.prev_top_k_layouts = [layout for cost, layout in top_k_results]
-                self.prev_top_k_scores = [cost for cost, layout in top_k_results]
+                
                 # 默认用第一个最优解
                 self.best_layout, best_cost = top_k_results[0][1], top_k_results[0][0]
-
+                self.all_rots = all_rots
                 # If t > 0, check whether previous top-k layouts are better
                 # if self.T > 0:
-                #     reassign_prev_pieces()
+                #     # 对当前best_layout中的每个小piece都做一次reassign
+                #     for r in range(self.grid_rows):
+                #         for c in range(self.grid_cols):
+                #             cell = self.best_layout[r][c]
+                #             if cell is not None:
+                #                 crt_index = cell[0]
+                #                 self.reassign_prev_pieces(crt_index)
 
-                # Record current time t's top-k solutions
-                # self.prev_top_k_layouts
-               
-                print(f"[INFO] Best cost for H/W={HW} group: {best_cost:.4f}")
-                print(f"[INFO] Best layout for H/W={HW} group: {self.best_layout}")
                 
+                
+                # TODO: error here, not consider group situation
                 img, pieces_in_rect = self.group_pieces()
                 output_image_path = f"{HW}.png"
                 cv2.imwrite(output_image_path, img)
@@ -281,6 +282,22 @@ class PuzzleSolver:
                 pieces = split_image_bisect_until_max(img, 400, 0)
                 print(f"[DEBUG] split_image_bisect_until_max: {[p.shape for p in pieces]}")
                 final_pieces.extend(pieces)
+
+
+                # Record current time t's top-k solutions
+                # self.prev_top_k_layouts
+                # 记录top-k解
+                # if split in pieces, not considered
+
+                if img.shape[0] <= 400 and img.shape[1] <= 400:
+                    
+                    self.prev_top_k_layouts.append([layout for cost, layout in top_k_results])
+                    self.prev_top_k_scores.append([cost for cost, layout in top_k_results])
+                    #TODO change all_rots logic
+                    self.prev_all_rots.append(all_rots)
+               
+                print(f"[INFO] Best cost for H/W={HW} group: {best_cost:.4f}")
+                print(f"[INFO] Best layout for H/W={HW} group: {self.best_layout}")
                 
                 # print(len(pieces), [p.shape[:2] for p in pieces])
 
@@ -298,7 +315,24 @@ class PuzzleSolver:
 
     
 
-    def reassign_prev_pieces(self):
+    def reassign_prev_pieces(self, crt_index): # crt_index need to be from 0, the new one
+        # 1. For loop for all prev top k for the t-1 group used in crt_index
+        # check whether in it
+        # find the t - 1 group index
+        # crt_index -> old index
+        score = 0
+        for prev_group_index in range(len(self.prev_top_k_layouts)):
+            # 2. add the prev score
+            score += self.prev_top_k_scores[prev_group_index][0]
+            # 3. add new score related to T arrangement
+            neibors = []
+            # check best_layout, find neibors. 
+
+            # if they are with each other: crt_index and neighbor_index
+            # get directly from all_rots 
+
+            
+
         pass
 
     def group_pieces(self):
