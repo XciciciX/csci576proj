@@ -5,9 +5,7 @@ from typing import List, Tuple, Dict, Optional
 from utils import rotate_piece, crop_background, build_all_rotations
 from solver import Solver
 
-
-
-# ---------- 布局搜索（DFS + 剪枝） ----------
+import cv2
 
 class PuzzleSolver:
     def __init__(self, pieces, grid_rows, grid_cols):
@@ -141,6 +139,8 @@ class PuzzleSolver:
                 print(f"[INFO] Best layout for H/W={HW} group: {self.best_layout}")
                 
                 img, pieces_in_rect = self.group_pieces()
+                output_image_path = f"{HW}.png"
+                cv2.imwrite(output_image_path, img)
 
                 self.used_index.update(pieces_in_rect)
                 final_pieces.append(img)
@@ -165,9 +165,9 @@ class PuzzleSolver:
 
         print(f"[INFO] Grouping pieces into one rectangle of size {h_val} x {w_val}...")
         print(f"[INFO] Sublayout: {sublayout}")
-        y0_prev = 0
+        x0_prev = 0
         for r in range(len(sublayout)):
-            x0_prev = 0
+            y0_prev = 0
             for c in range(len(sublayout[0])):
                 print(f"[DEBUG] Placing piece: {sublayout[r][c]}")
                 piece_idx, rot_idx = sublayout[r][c]
@@ -264,22 +264,22 @@ class PuzzleSolver:
     
         
     
-    def initialize_DFS_variables(self, sameH_lists):
-        # TODO: change back
-        self.grid_rows = 4
-        self.grid_cols = 4
-        print(f"[INFO] Initialized DFS grid size: {self.grid_rows} x {self.grid_cols}")
-        self.positions = [(r, c) for r in range(self.grid_rows) for c in range(self.grid_cols)]
+    # def initialize_DFS_variables(self, sameH_lists):
+    #     # TODO: change back
+    #     self.grid_rows = 
+    #     self.grid_cols = 0
+    #     print(f"[INFO] Initialized DFS grid size: {self.grid_rows} x {self.grid_cols}")
+    #     self.positions = [(r, c) for r in range(self.grid_rows) for c in range(self.grid_cols)]
 
-        self.best_cost = float("inf")
-        self.best_layout = None  # 2D: (piece_idx, rot_idx)
+    #     self.best_cost = float("inf")
+    #     self.best_layout = None  # 2D: (piece_idx, rot_idx)
 
-        # 当前状态
-        self.current_layout = [[None for _ in range(self.grid_cols)] for _ in range(self.grid_rows)]
-        self.used_piece = [False] * self.num_pieces
-        self.current_cost = 0.0
+    #     # 当前状态
+    #     self.current_layout = [[None for _ in range(self.grid_cols)] for _ in range(self.grid_rows)]
+    #     self.used_piece = [False] * self.num_pieces
+    #     self.current_cost = 0.0
 
-        self.solutions_found = 0
+    #     self.solutions_found = 0
     
     
 

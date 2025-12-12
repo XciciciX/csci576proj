@@ -2,7 +2,7 @@ from compute_similarity import edge_distance, compute_piece_edge_descriptors
 import numpy as np
 from collections import namedtuple
 from typing import List, Tuple, Dict, Optional
-from utils import rotate_piece, crop_background
+from utils import rotate_piece, crop_background, edge_len
 
 
 # Store info of a piece in a specific rotation
@@ -45,9 +45,11 @@ class Solver:
     def solve(self, n):
         
         self._get_score()
-        self._build_candidates(top_k=6)
+        self._build_candidates(top_k=15)
         self._dfs(0, n)
         return self.best_layout, self.best_cost
+
+
 
 
     def _get_score(self):
@@ -61,17 +63,16 @@ class Solver:
                 if i == j:
                     continue
                 pj = self.all_rots[j]
-                for rot1 in range(4):
-                    for rot2 in range(4):
-                        # if equal
-                        if (pi.shape[rot1%2] == pj.shape[rot2%2]):
-                            sim[i][j][rot1][rot2] = edge_distance(
-                                pi.edges[rot1], pj.edges[rot2]
-                            )
+                for e1 in range(4):
+                    for e2 in range(4):
+                        if edge_len(pi.shape, e1) == edge_len(pj.shape, e2):
+                            sim[i][j][e1][e2] = edge_distance(pi.edges[e1], pj.edges[e2])
                         else:
-                            sim[i][j][rot1][rot2] = float("inf")
-                        # otherwise, inf
+                            sim[i][j][e1][e2] = np.inf
         self.sim = sim
+    
+
+
 
     def _build_candidates(self, top_k=5):
         """
