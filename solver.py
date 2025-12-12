@@ -45,7 +45,7 @@ class Solver:
     def solve(self, n):
         
         self._get_score()
-        self._build_candidates(top_k=15)
+        self._build_candidates(top_k=10)
         self._dfs(0, n)
         return self.best_layout, self.best_cost
 
@@ -117,7 +117,8 @@ class Solver:
                 self.best_layout = [row[:] for row in self.current_layout]
                 print(f"[INFO] Found new best layout, cost={self.best_cost:.4f}")
             return
-
+        if pos_idx >= len(self.positions):
+            return
         r, c = self.positions[pos_idx]
 
         # 尝试放每一个尚未使用的 piece

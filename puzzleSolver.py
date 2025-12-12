@@ -2,7 +2,7 @@
 import numpy as np
 
 from typing import List, Tuple, Dict, Optional
-from utils import rotate_piece, crop_background, build_all_rotations
+from utils import rotate_piece, crop_background, build_all_rotations, max_rows_for_single_col, split_image_bisect_until_max
 from solver import Solver
 
 import cv2
@@ -116,6 +116,10 @@ class PuzzleSolver:
                     continue
                
                 #TODO: change grid rows grid cols
+                # picked, (H, W) = max_rows_for_single_col(self.pieces, same_lists, max_H=400, max_W=400)
+
+                # self.grid_rows = len(picked)
+                print("[DEBUG] Rows picked: {self.grid_rows}")
                 self.grid_rows = len(same_lists)
                 self.grid_cols = 1
                 crt_pieces = []
@@ -143,50 +147,122 @@ class PuzzleSolver:
                 cv2.imwrite(output_image_path, img)
 
                 self.used_index.update(pieces_in_rect)
-                final_pieces.append(img)
+                
+
+
+                pieces = split_image_bisect_until_max(img, 400, 0)
+                final_pieces.extend(pieces)
+                # print(len(pieces), [p.shape[:2] for p in pieces])
+
+
+
         for idx in range(self.num_pieces):
             if idx not in self.used_index:
                 final_pieces.append(self.pieces[idx])
                 
         self.pieces = final_pieces
         self.num_pieces = len(self.pieces)
-        
 
-        
 
+        # split. if the size is larger than 400, clip into pieces <= 400
+
+    
+
+            
 
     def group_pieces(self):
-        # 构建 sublayout 和 pieces 集合
-        result_rect, sublayout, pieces_in_rect, (pRow, pCol) = self.find_largest_filled_rectangle()
-        top_row, left_col, h_val, w_val = result_rect
+        result_rect, sublayout, pieces_in_rect, _ = self.find_largest_filled_rectangle()
 
-        canvas = np.zeros((500, 500, 3), dtype=np.uint8)
-        # canvas = []
+        # sublayout 可能是 ragged（每行列数不同），先安全取 row/col 数
+        R = len(sublayout)
+        C = max(len(row) for row in sublayout) if R > 0 else 0
+        if R == 0 or C == 0:
+            return None, pieces_in_rect
 
-        print(f"[INFO] Grouping pieces into one rectangle of size {h_val} x {w_val}...")
-        print(f"[INFO] Sublayout: {sublayout}")
-        x0_prev = 0
-        for r in range(len(sublayout)):
-            y0_prev = 0
-            for c in range(len(sublayout[0])):
-                print(f"[DEBUG] Placing piece: {sublayout[r][c]}")
+        # 1) 预先计算“每个格子旋转后的尺寸”
+        cell_hw = [[None] * len(sublayout[r]) for r in range(R)]
+        for r in range(R):
+            for c in range(len(sublayout[r])):
                 piece_idx, rot_idx = sublayout[r][c]
-                piece = self.pieces[piece_idx]
-                img = rotate_piece(piece, rot_idx)
-                print(f"[DEBUG] Placing piece shape: {img.shape}")
-                # if rotate, shape will rotate as well
+                img = rotate_piece(self.pieces[piece_idx], rot_idx)
                 ph, pw = img.shape[:2]
-                print(f"[DEBUG] Piece shape: {ph} x {pw}")
+                cell_hw[r][c] = (ph, pw)
+
+        # 2) 计算 row_heights：每行取最大高度（同一行理论上应相等；取 max 更稳）
+        row_heights = []
+        for r in range(R):
+            row_heights.append(max(cell_hw[r][c][0] for c in range(len(sublayout[r]))))
+
+        # 3) 计算 col_widths：每列取最大宽度（同一列理论上应相等；取 max 更稳）
+        col_widths = [0] * C
+        for r in range(R):
+            for c in range(len(sublayout[r])):
+                col_widths[c] = max(col_widths[c], cell_hw[r][c][1])
+
+        # 4) prefix sums -> 每格起点
+        y_offsets = [0]
+        for h in row_heights:
+            y_offsets.append(y_offsets[-1] + h)
+
+        x_offsets = [0]
+        for w in col_widths:
+            x_offsets.append(x_offsets[-1] + w)
+
+        H = y_offsets[-1]
+        W = x_offsets[-1]
+        canvas = np.zeros((H, W, 3), dtype=np.uint8)
+
+        print(f"[INFO] group canvas size = {H} x {W}")
+
+        # 5) paste：注意 numpy 是 [y, x]
+        for r in range(R):
+            for c in range(len(sublayout[r])):
+                piece_idx, rot_idx = sublayout[r][c]
+                img = rotate_piece(self.pieces[piece_idx], rot_idx)
+                ph, pw = img.shape[:2]
+
+                y0 = y_offsets[r]
+                x0 = x_offsets[c]
+
+                canvas[y0:y0+ph, x0:x0+pw, :] = img
+
+        canvas = crop_background(canvas, bg_color=(0, 0, 0), tol=0)
+        return canvas, pieces_in_rect
+        
+
+
+    # def group_pieces(self):
+    #     # 构建 sublayout 和 pieces 集合
+    #     result_rect, sublayout, pieces_in_rect, (pRow, pCol) = self.find_largest_filled_rectangle()
+    #     top_row, left_col, h_val, w_val = result_rect
+
+    #     canvas = np.zeros((500, 500, 3), dtype=np.uint8)
+    #     # canvas = []
+
+    #     print(f"[INFO] Grouping pieces into one rectangle of size {h_val} x {w_val}...")
+    #     print(f"[INFO] Sublayout: {sublayout}")
+    #     x0_prev = 0
+    #     for r in range(len(sublayout)):
+    #         y0_prev = 0
+    #         for c in range(len(sublayout[0])):
+    #             print(f"[DEBUG] Placing piece: {sublayout[r][c]}")
+    #             piece_idx, rot_idx = sublayout[r][c]
+    #             piece = self.pieces[piece_idx]
+    #             img = rotate_piece(piece, rot_idx)
+    #             print(f"[DEBUG] Placing piece shape: {img.shape}")
+    #             # if rotate, shape will rotate as well
+    #             ph, pw = img.shape[:2]
+    #             print(f"[DEBUG] Piece shape: {ph} x {pw}")
 
                 
-                # canvas = canvas.append(np.zeros((ph, pw, 3), dtype=np.uint8))
-                canvas[x0_prev:x0_prev+ph, y0_prev:y0_prev+pw, :] = img
-                x0_prev = x0_prev+ph
-                y0_prev = y0_prev+pw
-                print(f"[DEBUG]: CRT {y0_prev}, {x0_prev}")
-        canvas = crop_background(canvas, bg_color=(0,0,0), tol=0)
+    #             # canvas = canvas.append(np.zeros((ph, pw, 3), dtype=np.uint8))
+    #             canvas[x0_prev:x0_prev+ph, y0_prev:y0_prev+pw, :] = img
+    #             x0_prev = x0_prev+ph
+    #             y0_prev = y0_prev+pw
+    #             print(f"[DEBUG]: CRT {y0_prev}, {x0_prev}")
+    #     canvas = crop_background(canvas, bg_color=(0,0,0), tol=0)
 
-        return (canvas, pieces_in_rect)
+    #     return (canvas, pieces_in_rect)
 
 
     # TODO: find all rectangle
