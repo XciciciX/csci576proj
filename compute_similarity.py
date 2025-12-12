@@ -107,4 +107,17 @@ def grad_distance(g1, g2):
 def edge_distance(descA, descB, alpha=ALPHA, beta=BETAB):
     color_diff = color_distance(descA[0], descB[0])
     grad_diff  = grad_distance(descA[1],  descB[1])
-    return alpha * color_diff + beta * grad_diff
+
+    # 计算颜色丰富度（熵），越丰富奖励越大
+    def color_entropy(hist):
+        h = hist[hist > 0]
+        return -np.sum(h * np.log(h))
+    entropyA = color_entropy(descA[0])
+    entropyB = color_entropy(descB[0])
+    richness = (entropyA + entropyB) / 2
+    # 归一化到0~1（经验上最大约为ln(bins^3)）
+    max_entropy = np.log(COLOR_BINS ** 3)
+    richness_score = richness / max_entropy
+    # 颜色丰富时降低距离分数（奖励），权重可调
+    reward = 0.2 * richness_score  # 0.2可调
+    return alpha * color_diff + beta * grad_diff - reward

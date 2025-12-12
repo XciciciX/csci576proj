@@ -8,13 +8,12 @@ from utils import rotate_piece, crop_background, edge_len
 # Store info of a piece in a specific rotation
 PieceRot = namedtuple("PieceRot", ["piece_idx", "img", "edges", "shape"])
 
-# ---------- 布局搜索（DFS + 剪枝） ----------
+
 
 class Solver:
-    def __init__(self, all_rots, grid_rows, grid_cols):
+    def __init__(self, all_rots, grid_rows, grid_cols, top_k_solutions=1):
         self.all_rots = all_rots
         self.num_pieces = len(all_rots)
-    
         # DFS Usage
         self.grid_rows = grid_rows
         self.grid_cols = grid_cols
@@ -32,22 +31,25 @@ class Solver:
         self.sim = []
         self.candidates = []
 
-
-    
         # Grouping
         self.height_to_indices: Dict[int, List[int]] = {}
         self.width_to_indices: Dict[int, List[int]] = {}
-
         self.used_index = set()
+
+        # Top-k solutions
+        self.top_k = top_k_solutions
+        self.top_k_solutions = []  # list of (cost, layout)
 
 
 
     def solve(self, n):
-        
         self._get_score()
         self._build_candidates(top_k=10)
+        self.top_k_solutions = []
         self._dfs(0, n)
-        return self.best_layout, self.best_cost
+        # 按cost升序返回top-k (cost, layout)
+        self.top_k_solutions.sort(key=lambda x: x[0])
+        return self.top_k_solutions[:self.top_k]
 
 
 
@@ -112,9 +114,17 @@ class Solver:
         """
         # 所有位置都填满了，检查一次完整布局
         if pos_idx == n:
+            # 记录top-k解
+            layout_copy = [row[:] for row in self.current_layout]
+            self.top_k_solutions.append((self.current_cost, layout_copy))
+            # 保持top_k_solutions不超过k个（大于k时弹出最大cost的）
+            if len(self.top_k_solutions) > self.top_k:
+                self.top_k_solutions.sort(key=lambda x: x[0])
+                self.top_k_solutions = self.top_k_solutions[:self.top_k]
+            # 兼容原有best_layout
             if self.current_cost < self.best_cost:
                 self.best_cost = self.current_cost
-                self.best_layout = [row[:] for row in self.current_layout]
+                self.best_layout = layout_copy
                 print(f"[INFO] Found new best layout, cost={self.best_cost:.4f}")
             return
         if pos_idx >= len(self.positions):

@@ -5,6 +5,7 @@ import numpy as np
 from typing import List, Tuple, Dict, Optional
 from utils import rotate_piece, crop_background, build_all_rotations, max_rows_for_single_col, split_image_bisect_until_max
 from solver import Solver
+from solver import PieceRot
 
 import cv2
 
@@ -18,28 +19,24 @@ class PuzzleSolver:
         self.grid_rows = grid_rows
         self.grid_cols = grid_cols
         self.is_rotated = is_rotated
-        # self.positions = [(r, c) for r in range(self.grid_rows) for c in range(self.grid_cols)]
+        
 
         self.best_cost = float("inf")
         self.best_layout = None  # 2D: (piece_idx, rot_idx)
 
-        # self.current_layout = [[None for _ in range(self.grid_cols)] for _ in range(self.grid_rows)]
-        self.used_piece = [False] * self.num_pieces
-        self.current_cost = 0.0
 
-        self.solutions_found = 0
-
-        self.sim = []
-        self.candidates = []
-
-
-    
         # Grouping
         self.height_to_indices: Dict[int, List[int]] = {}
         self.width_to_indices: Dict[int, List[int]] = {}
 
         self.used_index = set()
         self.new_to_old = []
+
+        self.T = 0
+        # t-1
+        self.prev_top_k_layouts = []   # List[List[Tuple[int, int]]]()
+        self.prev_top_k_scores = []          # List[List[float]]()        
+        self.prev_all_rots = []        # List[List[PieceRot]]()  
 
     
     def solve_packing_2(self):
@@ -65,12 +62,13 @@ class PuzzleSolver:
             self.build_solution_same_HW()
             if self.num_pieces == prev_num_pieces:
                 break
+            self.T += 1
         return self.pieces[0]
        
         
 
     def find_same_HW(self):
-    # Build height_to_indices and width_to_indices
+        # Build height_to_indices and width_to_indices
         for idx, prot in enumerate(self.pieces):
             ph, pw = prot.shape[:2]
             self.height_to_indices.setdefault(ph, []).append(idx)
@@ -202,6 +200,17 @@ class PuzzleSolver:
         #   c. put these pieces back to new pieces
         # 3. Finally, get a new pieces list with all pieces grouped + original pieces that cannot be grouped.
         # 4. Recalculate all_rots with new pieces list
+
+        #TODO 
+        # Check whether t-1 group is good
+        # Need one variable to make sure whether this piece at t is grouped at t-1
+        # If yes, do a function to check whether the grouping is good enough
+
+        # Function: 
+        # It needs to record the t-1 best layout cost.
+        # Calculate these t-1 edges with the current layout
+        # Try other t-1 layout to see whether the cost is better
+        # Rearrange the t-1 pieces if needed and update
         
         
         final_pieces = []
@@ -240,13 +249,24 @@ class PuzzleSolver:
                 self.new_to_old = new_to_old
 
                 all_rots = build_all_rotations(crt_pieces, self.is_rotated)
-    
-                solver = Solver(all_rots, self.grid_rows, self.grid_cols)
-                self.best_layout, best_cost = solver.solve(len(same_lists)) # the number of grid_rows * grid_cols should be larger than N
 
-                # Update variables
-                # self.initialize_DFS_variables(same_lists)
-                
+                # 获取top-k解
+                k = 1  # 你可以根据需要调整k
+                solver = Solver(all_rots, self.grid_rows, self.grid_cols, top_k_solutions=k)
+                top_k_results = solver.solve(len(same_lists))  # List[(cost, layout)]
+                # 记录top-k解
+                self.prev_top_k_layouts = [layout for cost, layout in top_k_results]
+                self.prev_top_k_scores = [cost for cost, layout in top_k_results]
+                # 默认用第一个最优解
+                self.best_layout, best_cost = top_k_results[0][1], top_k_results[0][0]
+
+                # If t > 0, check whether previous top-k layouts are better
+                # if self.T > 0:
+                #     reassign_prev_pieces()
+
+                # Record current time t's top-k solutions
+                # self.prev_top_k_layouts
+               
                 print(f"[INFO] Best cost for H/W={HW} group: {best_cost:.4f}")
                 print(f"[INFO] Best layout for H/W={HW} group: {self.best_layout}")
                 
@@ -278,7 +298,8 @@ class PuzzleSolver:
 
     
 
-            
+    def reassign_prev_pieces(self):
+        pass
 
     def group_pieces(self):
         result_rect, sublayout, pieces_in_rect, _ = self.find_largest_filled_rectangle()
