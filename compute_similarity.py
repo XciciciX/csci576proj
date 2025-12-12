@@ -2,11 +2,11 @@
 import cv2
 import numpy as np
 # ---- 配置参数 ----
-EDGE_STRIP_WIDTH = 10        # 用于提取边缘条带的宽度 (像素)
-COLOR_BINS = 8              # HSV 每个通道的 bin 数
-GRAD_BINS = 8               # 梯度方向直方图 bin 数
-ALPHA = 0.5                 # 颜色差权重
-BETAB = 0.5                 # 梯度差权重
+EDGE_STRIP_WIDTH = 3        # 用于提取边缘条带的宽度 (像素)
+COLOR_BINS = 25              # HSV 每个通道的 bin 数
+GRAD_BINS = 25               # 梯度方向直方图 bin 数
+ALPHA = 0.7                 # 颜色差权重
+BETAB = 0.3                 # 梯度差权重
 MIN_COMPONENT_AREA = 10    # 过滤太小的噪声连通域
 def compute_color_hist(strip, bins=COLOR_BINS):
     hsv = cv2.cvtColor(strip, cv2.COLOR_BGR2HSV)
