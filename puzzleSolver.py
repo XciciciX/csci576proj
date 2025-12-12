@@ -170,16 +170,22 @@ class PuzzleSolver:
                     for idx in list(group) + list(group2):
                         img = self.pieces[idx]
                         h, w = img.shape[:2]
-                        if axis == 1:
+                        # 对每个piece分别判断key是高还是宽
+                        if h == k or h == k2:
+                            # 按高度分组
+                            if h > min_dim:
+                                self.pieces[idx] = img[:min_dim, :w].copy()
+                            else:
+                                self.pieces[idx] = img
+                        elif w == k or w == k2:
+                            # 按宽度分组
                             if w > min_dim:
                                 self.pieces[idx] = img[:h, :min_dim].copy()
                             else:
                                 self.pieces[idx] = img
                         else:
-                            if h > min_dim:
-                                self.pieces[idx] = img[:min_dim, :w].copy()
-                            else:
-                                self.pieces[idx] = img
+                            # 不裁剪
+                            self.pieces[idx] = img
             merged[k] = sorted(list(set(merged_group)))
         return merged
 
