@@ -1,0 +1,45 @@
+# ============================
+# Python
+# ============================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+
+# Virtual environments
+venv/
+.env/
+*.egg-info/
+
+# ============================
+# Project-specific ignores
+# ============================
+
+# Ignore all PNG files starting with testk
+test*.png
+
+# Ignore debug_rectified file or folder
+debug_rectified
+debug_rectified/
+
+# ============================
+# MacOS system files
+# ============================
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon must end with two \r
+Icon
+
+
+# ============================
+# Editors / IDE
+# ============================
+
+# VSCode
+.vscode/
+
+# PyCharm
+.idea/
