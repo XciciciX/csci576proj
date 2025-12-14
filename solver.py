@@ -44,7 +44,7 @@ class Solver:
 
     def solve(self, n):
         self._get_score()
-        self._build_candidates(top_k=10)
+        self._build_candidates(top_k=12)
         self.top_k_solutions = []
         self._dfs(0, n)
         # 按cost升序返回top-k (cost, layout)

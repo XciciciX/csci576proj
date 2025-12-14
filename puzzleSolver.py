@@ -256,6 +256,9 @@ class PuzzleSolver:
                 top_k_results = solver.solve(len(same_lists))  # List[(cost, layout)]
                 
                 # 默认用第一个最优解
+                if len(top_k_results) == 0:
+                    print(f"[WARN] No solution found for H/W={HW} group.")
+                    continue
                 self.best_layout, best_cost = top_k_results[0][1], top_k_results[0][0]
                 self.all_rots = all_rots
                 # If t > 0, check whether previous top-k layouts are better

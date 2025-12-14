@@ -107,6 +107,7 @@ def split_image_bisect_until_max(
     H, W = img.shape[:2]
     out: List[np.ndarray] = []
 
+
     def rec(cur: np.ndarray, oy: int, ox: int):
         h, w = cur.shape[:2]
         if h <= max_size and w <= max_size:
@@ -115,8 +116,13 @@ def split_image_bisect_until_max(
 
         # 沿着更长的维度切，切分点尽量均匀
         if h >= w:
-            # 让每块都不超过max_size，且尽量均匀
             if h > max_size:
+                # # 如果剩余部分比max_size小很多（比如<60%），则保留max_size的块和剩余小块
+                # if h - max_size < int(0.6 * max_size):
+                #     out.append(cur[:max_size, ...])
+                #     if h > max_size:
+                #         out.append(cur[max_size:, ...])
+                #     return
                 n = int(np.ceil(h / max_size))
                 sizes = [h // n] * n
                 for i in range(h % n):
@@ -129,6 +135,11 @@ def split_image_bisect_until_max(
                 out.append(cur)
         else:
             if w > max_size:
+                # if w - max_size < int(0.6 * max_size):
+                #     out.append(cur[:, :max_size, ...])
+                #     if w > max_size:
+                #         out.append(cur[:, max_size:, ...])
+                #     return
                 n = int(np.ceil(w / max_size))
                 sizes = [w // n] * n
                 for i in range(w % n):
