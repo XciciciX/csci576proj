@@ -1,5 +1,7 @@
 # csci576proj
 
+Prof said that the image size is fixed. Can improve some of the code. https://piazza.com/class/mfbhw1i1809d5/post/144
+
 ## Project Demonstration
 https://piazza.com/class/mfbhw1i1809d5/post/121#
 https://piazza.com/class/mfbhw1i1809d5/post/156
@@ -11,22 +13,12 @@ Confused still...
 2. Fast enough. (Several seconds)
 3. Animation Done.
 4. Run testcases for all regular translate and rotation.
-
+5. Function `rectify_piece` improved.
+6. Irregular implemented.
 
 ## TODO List
-
-1. Rotation version is blurry. Function `rectify_piece` needs to be improved.
-2. Only consider square situation. Irregular not added.
-3. Animation not done.
-4. Prof said that the image size is fixed. Can improve some of the code. https://piazza.com/class/mfbhw1i1809d5/post/144
-
-## Problem
-1. How to implement Irregular? https://piazza.com/class/mfbhw1i1809d5/post/119
-https://piazza.com/class/mfbhw1i1809d5/post/157
-    
-    a. find all possible split situations. 
-
-    b. then do BFS on same size pieces
+ 1. Irregular animation not done.
+ 2. Irregular algorithm improvement.
 
 
 ## Two big problems
