@@ -9,8 +9,12 @@ Confused still...
 ## Done
 1. Translate and rotation with regular shape done.
 2. Fast enough. (Several seconds)
+3. Animation Done.
+4. Run testcases for all regular translate and rotation.
+
+
 ## TODO List
-1. Run testcases for all translate and rotation.
+
 1. Rotation version is blurry. Function `rectify_piece` needs to be improved.
 2. Only consider square situation. Irregular not added.
 3. Animation not done.
@@ -23,3 +27,8 @@ https://piazza.com/class/mfbhw1i1809d5/post/157
     a. find all possible split situations. 
 
     b. then do BFS on same size pieces
+
+
+## Two big problems
+1. the split does not follow correct thing
+2. for rotate, need to compare more, adjust, need top k or rearrangements
